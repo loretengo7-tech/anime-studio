@@ -1,0 +1,69 @@
+name: Build unsigned iOS .ipa
+
+# ANIME STUDIO — builds an UNSIGNED .ipa from site.zip (no signing certificates).
+#
+# Run it: repo → Actions → "Build unsigned iOS .ipa" → Run workflow.
+# Result: an artifact named `anime-studio-unsigned-ipa` (a .zip that contains
+#         the .ipa). Sideload it with AltStore / Sideloadly + your free Apple ID
+#         (7-day validity, max 3 apps). It can NOT be installed directly on the
+#         iPhone — iOS always requires a signature.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Unpack the web app
+        run: |
+          mkdir -p dist-static
+          unzip -q site.zip -d dist-static
+          test -f dist-static/index.html || { echo "site.zip has no index.html"; exit 1; }
+
+      - name: Capacitor config + iOS platform
+        run: |
+          cat > capacitor.config.json <<'JSON'
+          {
+            "appId": "com.animestudio.app",
+            "appName": "ANIME STUDIO",
+            "webDir": "dist-static",
+            "ios": { "contentInset": "always" },
+            "server": { "androidScheme": "https" }
+          }
+          JSON
+          npm install @capacitor/core@7 @capacitor/cli@7 @capacitor/ios@7 --no-audit --no-fund
+          pod --version || brew install cocoapods
+          npx cap add ios || npx cap sync ios
+          npx cap sync ios
+
+      - name: Archive without code signing
+        run: |
+          xcodebuild -workspace ios/App/App.xcworkspace \
+            -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -quiet
+
+      - name: Package unsigned .ipa
+        run: |
+          mkdir -p build/Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app build/Payload/
+          cd build
+          zip -qry anime-studio-unsigned.ipa Payload
+          ls -la anime-studio-unsigned.ipa
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anime-studio-unsigned-ipa
+          path: build/anime-studio-unsigned.ipa
