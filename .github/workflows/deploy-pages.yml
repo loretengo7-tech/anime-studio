@@ -1,0 +1,50 @@
+name: Deploy to GitHub Pages
+
+# ANIME STUDIO — publishes site-pages.zip (built with the /anime-studio/ base
+# path) to GitHub Pages, so the app lives at:
+#   https://loretengo7-tech.github.io/anime-studio/
+#
+# IMPORTANT (one time): repo → Settings → Pages → Source: "GitHub Actions".
+# Then: Actions → "Deploy to GitHub Pages" → Run workflow (or any push to main).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unpack site
+        run: |
+          mkdir -p site
+          unzip -q site-pages.zip -d site
+          test -f site/index.html || { echo "site-pages.zip has no index.html"; exit 1; }
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
