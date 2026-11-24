@@ -1,0 +1,11 @@
+{
+  "appId": "com.animestudio.app",
+  "appName": "ANIME STUDIO",
+  "webDir": "dist-static",
+  "ios": {
+    "contentInset": "always"
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}
