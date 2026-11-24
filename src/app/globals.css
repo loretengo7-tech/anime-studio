@@ -1,0 +1,524 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ============ ANIME STUDIO editor styles ============ */
+
+html, body {
+  height: 100%;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+}
+
+/* No text selection in editing surfaces (interferes with touch gestures) */
+.no-select {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Slim dark scrollbars */
+.as-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.as-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.as-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 3px;
+}
+
+/* Timeline rows and clips */
+.as-timeline {
+  touch-action: pan-x pan-y;
+}
+.as-clip {
+  touch-action: none;
+}
+.as-playhead {
+  will-change: transform;
+}
+
+/* mono timecode */
+.as-mono {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Range inputs — professional dark */
+input[type="range"].as-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 28px;
+  background: transparent;
+  width: 100%;
+}
+input[type="range"].as-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #3f3f46;
+  border-radius: 2px;
+}
+input[type="range"].as-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 18px;
+  width: 18px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #18181b;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+input[type="range"].as-range::-moz-range-track {
+  height: 4px;
+  background: #3f3f46;
+  border-radius: 2px;
+}
+input[type="range"].as-range::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #f59e0b;
+  border: 2px solid #18181b;
+}
+
+/* prevent iOS zoom on focus for compact inputs */
+input, textarea, select {
+  font-size: 16px;
+}
+
+/* keyframe diamond */
+.as-kf {
+  width: 12px;
+  height: 12px;
+  transform: rotate(45deg);
+  border: 1.5px solid #18181b;
+}
+
+/* waveform pointer events */
+.as-wave {
+  pointer-events: none;
+}
+
+/* ============================================================
+   ANIME STUDIO — LIQUID GLASS design system (v3)
+   Vivid aurora field behind frosted translucent surfaces.
+   Every chrome surface refracts the background: real glass.
+   ============================================================ */
+
+/* ---- aurora field (painted behind all content) ---- */
+body {
+  background: #050510;
+  color: #e4e4e7;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: -12%;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(40% 36% at 15% 20%, rgba(124, 58, 237, 0.62), transparent 66%),
+    radial-gradient(36% 32% at 86% 8%, rgba(6, 182, 212, 0.50), transparent 64%),
+    radial-gradient(34% 30% at 80% 84%, rgba(219, 39, 119, 0.44), transparent 62%),
+    radial-gradient(28% 26% at 6% 78%, rgba(217, 119, 6, 0.32), transparent 60%),
+    radial-gradient(50% 46% at 50% 55%, rgba(76, 22, 148, 0.46), transparent 72%),
+    radial-gradient(26% 22% at 48% 4%, rgba(16, 185, 129, 0.24), transparent 58%),
+    #050510;
+  animation: aurora-drift 32s ease-in-out infinite alternate;
+}
+@keyframes aurora-drift {
+  0%   { transform: translate3d(-2.5%, -1.5%, 0) scale(1) rotate(0deg); }
+  33%  { transform: translate3d(2%, 2.5%, 0) scale(1.06) rotate(1.5deg); }
+  66%  { transform: translate3d(-1.5%, 2%, 0) scale(1.03) rotate(-1.2deg); }
+  100% { transform: translate3d(2.5%, -2%, 0) scale(1.08) rotate(0.8deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
+
+/* ---- core glass surfaces ----
+   White-tinted frosted panels: the aurora must remain visible
+   through them, that is what sells the glass. */
+.glass {
+  background: linear-gradient(165deg,
+    rgba(255, 255, 255, 0.11),
+    rgba(255, 255, 255, 0.045) 45%,
+    rgba(255, 255, 255, 0.075));
+  -webkit-backdrop-filter: blur(30px) saturate(190%);
+  backdrop-filter: blur(30px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
+    0 10px 34px rgba(0, 0, 0, 0.42);
+}
+
+.glass-strong {
+  background: linear-gradient(165deg,
+    rgba(40, 36, 66, 0.42),
+    rgba(14, 13, 26, 0.38));
+  -webkit-backdrop-filter: blur(36px) saturate(180%);
+  backdrop-filter: blur(36px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.03),
+    0 14px 44px rgba(0, 0, 0, 0.50);
+}
+
+.glass-soft {
+  background: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.glass-inset {
+  background: rgba(5, 5, 14, 0.38);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 2px 10px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* active / selected glass */
+.glass-accent {
+  background: linear-gradient(165deg, rgba(251, 191, 36, 0.26), rgba(217, 119, 6, 0.12));
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 0 22px rgba(245, 158, 11, 0.30);
+}
+
+.glass-violet {
+  background: linear-gradient(165deg, rgba(167, 139, 250, 0.28), rgba(109, 40, 217, 0.14));
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  border: 1px solid rgba(167, 139, 250, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 0 22px rgba(139, 92, 246, 0.30);
+}
+
+.glass-danger {
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  box-shadow: 0 0 18px rgba(239, 68, 68, 0.22);
+}
+
+/* frosted button */
+.gbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  color: #e4e4e7;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.06s ease;
+  touch-action: manipulation;
+}
+.gbtn:hover {
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.09));
+  border-color: rgba(255, 255, 255, 0.26);
+}
+.gbtn:active { transform: scale(0.97); }
+.gbtn:disabled { opacity: 0.45; pointer-events: none; }
+
+.gbtn-accent {
+  background: linear-gradient(165deg, rgba(251, 191, 36, 0.92), rgba(217, 119, 6, 0.92));
+  border-color: rgba(251, 191, 36, 0.9);
+  color: #0c0a03;
+  font-weight: 600;
+  box-shadow: 0 4px 22px rgba(245, 158, 11, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.gbtn-accent:hover { background: linear-gradient(165deg, rgba(251, 191, 36, 1), rgba(217, 119, 6, 1)); }
+
+.gbtn-violet {
+  background: linear-gradient(165deg, rgba(139, 92, 246, 0.90), rgba(109, 40, 217, 0.90));
+  border-color: rgba(167, 139, 250, 0.9);
+  color: #f4f1ff;
+  font-weight: 600;
+  box-shadow: 0 4px 22px rgba(139, 92, 246, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+/* toolbar button */
+.tb-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  color: #bcbcd0;
+  transition: background 0.15s ease, color 0.15s ease;
+  touch-action: manipulation;
+}
+.tb-btn:hover { background: rgba(255, 255, 255, 0.14); color: #f4f4f5; }
+.tb-btn:disabled { opacity: 0.4; pointer-events: none; }
+
+/* inputs */
+.ginput {
+  background: rgba(5, 5, 14, 0.42);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: #e4e4e7;
+  padding: 6px 8px;
+  font-size: 12px;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.ginput:focus {
+  border-color: rgba(251, 191, 36, 0.65);
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18), 0 0 16px rgba(245, 158, 11, 0.15);
+}
+select.ginput option { background: #12101f; color: #e4e4e7; }
+
+/* range slider — glass edition */
+input[type="range"].as-range::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+}
+input[type="range"].as-range::-webkit-slider-thumb {
+  height: 18px;
+  width: 18px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: linear-gradient(165deg, #fde68a, #d97706);
+  border: 2px solid rgba(10, 10, 15, 0.9);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6), 0 0 12px rgba(245, 158, 11, 0.5);
+}
+
+/* scrollbar */
+.as-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 3px;
+}
+
+/* selection glow */
+.as-selected {
+  box-shadow: 0 0 0 1.5px #fbbf24, 0 0 22px rgba(245, 158, 11, 0.50), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* timeline clip surfaces — glass tiles */
+.as-clip {
+  background: linear-gradient(160deg, rgba(251, 191, 36, 0.17), rgba(120, 78, 16, 0.12) 60%, rgba(50, 34, 8, 0.14));
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.20), 0 3px 10px rgba(0, 0, 0, 0.30);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.as-clip-audio {
+  background: linear-gradient(160deg, rgba(52, 211, 153, 0.16), rgba(6, 78, 59, 0.14) 60%, rgba(4, 40, 30, 0.16));
+}
+.as-clip-text {
+  background: linear-gradient(160deg, rgba(167, 139, 250, 0.18), rgba(76, 29, 149, 0.14) 60%, rgba(40, 16, 84, 0.16));
+}
+
+/* floating glass card entrance */
+@keyframes glass-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.glass-in { animation: glass-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1); }
+
+/* ---- After Effects style sheet headers ---- */
+.ae-sheet h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #b9b9cc;
+  margin: 4px 0 10px;
+}
+.ae-sheet h3::before {
+  content: '';
+  width: 3px;
+  height: 11px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #fbbf24, #d97706);
+  box-shadow: 0 0 9px rgba(245, 158, 11, 0.55);
+  flex-shrink: 0;
+}
+.ae-sheet h3:not(:first-child) {
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* sheet grabber */
+.ae-grabber {
+  width: 44px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.30);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.18);
+  margin: 8px auto 2px;
+}
+
+/* ambient glow orb behind the monitor */
+.monitor-glow {
+  position: relative;
+}
+.monitor-glow::before {
+  content: '';
+  position: absolute;
+  inset: -18px;
+  border-radius: 28px;
+  background:
+    radial-gradient(60% 60% at 50% 40%, rgba(139, 92, 246, 0.16), transparent 70%),
+    radial-gradient(40% 40% at 80% 70%, rgba(8, 145, 178, 0.10), transparent 70%);
+  pointer-events: none;
+}
+
+/* iOS Safari fallback: no backdrop-filter → solid dark surfaces */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass { background: rgba(28, 26, 44, 0.92); }
+  .glass-strong { background: rgba(18, 16, 30, 0.95); }
+  .glass-soft { background: rgba(255, 255, 255, 0.10); }
+  .glass-inset { background: rgba(5, 5, 14, 0.85); }
+  .gbtn { background: rgba(255, 255, 255, 0.10); }
+  .ginput { background: rgba(5, 5, 14, 0.80); }
+}
