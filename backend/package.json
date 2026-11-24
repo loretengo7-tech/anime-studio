@@ -1,0 +1,13 @@
+{
+  "name": "anime-studio-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ANIME STUDIO — backend de herramientas (FFmpeg, Whisper, yt-dlp, Earshot, Blender) con cola de trabajos y progreso real. Node puro, cero dependencias npm.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

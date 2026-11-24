@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ANIME STUDIO data model
+
+/// A saved editing project (the full editor document as JSON)
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  data      String   // JSON serialized project document (composition, tracks, clips, keyframes, effects)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// An imported media asset stored on the server disk
+model MediaAsset {
+  id           String   @id @default(cuid())
+  filename     String   // original file name
+  storagePath  String   // path on server disk
+  mimeType     String
+  size         Int
+  kind         String   // "video" | "audio" | "image"
+  duration     Float?   // seconds (video/audio)
+  width        Int?
+  height       Int?
+  fps          Float?
+  proxyPath    String?  // generated low-res proxy (for mobile scrubbing)
+  meta         String?  // extra JSON metadata
+  createdAt    DateTime @default(now())
+}
+
+/// A background cloud processing job (proxies, audio normalization, cloud render)
+model CloudJob {
+  id           String   @id @default(cuid())
+  projectId    String?
+  type         String   // "proxy" | "normalize_audio" | "cloud_render" | "convert"
+  status       String   // "queued" | "running" | "done" | "error"
+  progress     Float    @default(0)
+  payload      String   // JSON input
+  result       String?  // JSON output
+  error        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+/// AI assistant conversation log (per project)
+model AIMessage {
+  id        String   @id @default(cuid())
+  projectId String
+  role      String   // "user" | "assistant"
+  content   String
+  ops       String?  // JSON operations generated (assistant messages)
+  mode      String?  // "auto" | "preview"
+  createdAt DateTime @default(now())
+}
