@@ -22,7 +22,7 @@ RUN apt-get update \
  && python3 -m venv /opt/anime-python \
  && pip install --no-cache-dir faster-whisper==1.2.1 earshot==1.2.2 \
  && HF_HUB_DISABLE_XET=1 python3 -c 'from faster_whisper.utils import download_model; download_model("tiny")' \
- && chmod -R a+rX /opt/anime-models
+ && chmod -R a+rX /app /opt/anime-models
 
 ENV HF_HUB_OFFLINE=1
 USER node
