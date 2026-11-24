@@ -1,8 +1,8 @@
-name: Deploy to GitHub Pages
+name: Deploy a GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: "pages"
   cancel-in-progress: true
 
 jobs:
@@ -24,31 +24,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check files
-        run: |
-          echo "Repo root contains:"
-          ls -la
-          if [ ! -f site-pages.zip ]; then
-            echo "::error::FALTA site-pages.zip en la raíz del repo — subilo con Add file > Upload files"
-            exit 1
-          fi
-
-      - name: Unpack site
-        run: |
-          mkdir -p site
-          unzip -q site-pages.zip -d site
-          test -f site/index.html || { echo "::error::site-pages.zip no contiene index.html — seguramente subiste otro zip en vez de site-pages.zip"; exit 1; }
-
-      - name: Configure Pages (auto-enable)
+      - name: Configurar Pages
         uses: actions/configure-pages@v5
-        with:
-          enablement: true
 
-      - name: Upload artifact
+      - name: Subir artifact (UNA sola vez)
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: "."
 
-      - name: Deploy to GitHub Pages
+      - name: Desplegar
         id: deployment
         uses: actions/deploy-pages@v4
