@@ -12,6 +12,7 @@ import { mediaManager, importMediaFile } from '@/lib/media/mediaManager'
 import { STATIC_MODE, localImportUpload } from '@/lib/media/staticMode'
 import { evalProperty } from '@/lib/engine/keyframes'
 import { projectDuration } from '@/lib/engine/types'
+import { openCompIn } from '@/lib/engine/precomp'
 
 const st = () => useEditorStore.getState()
 const now = () => playbackEngine.currentTime
@@ -536,4 +537,215 @@ export function parseTime(raw: string, fps: number): number | null {
   else if (parts.length === 3) [m, sec, fr] = parts
   else if (parts.length === 2) [sec, fr] = parts
   return h * 3600 + m * 60 + sec + fr / fps
+}
+
+// ------------------------------------------------------------------ multi-select
+export function selectedClips(): Clip[] {
+  const s = st()
+  const ids = s.selectedClipIds.length ? s.selectedClipIds : s.selectedClipId ? [s.selectedClipId] : []
+  return s.doc.clips.filter(c => ids.includes(c.id))
+}
+
+export function selectAllLayers() {
+  st().selectMany(layerOrder(st().doc).map(c => c.id))
+}
+
+export function deleteSelectedLayers() {
+  const cs = selectedClips()
+  if (!cs.length) return
+  const ids = new Set(cs.map(c => c.id))
+  st().mutate(d => {
+    d.clips = d.clips.filter(x => !ids.has(x.id))
+    for (const x of d.clips) if (x.parentId && ids.has(x.parentId)) x.parentId = null
+  })
+  st().select(null)
+  for (const id of ids) mediaManager.releaseClip(id)
+}
+
+export function duplicateSelectedLayers() {
+  const cs = selectedClips()
+  if (cs.length <= 1) { duplicateSelected(); return }
+  const newIds: string[] = []
+  st().mutate(d => {
+    for (const src of cs) {
+      const copy = JSON.parse(JSON.stringify(src)) as Clip
+      copy.id = uid('clip')
+      const ti = d.tracks.findIndex(t => t.id === src.trackId)
+      const track = newTrackFor(d, src.kind, `${src.name} copy`, Math.max(0, ti))
+      copy.trackId = track.id
+      d.clips.push(copy)
+      newIds.push(copy.id)
+    }
+  })
+  st().selectMany(newIds)
+}
+
+// ------------------------------------------------------------------ clipboard
+type KfClip = { kind: 'keyframes'; items: { prop: string; fxType?: string; dt: number; value: number; easing: EasingName; handles?: [{ x: number; y: number }, { x: number; y: number }] }[] }
+type LayerClipboard = { kind: 'layers'; clips: Clip[]; t0: number }
+let clipboard: KfClip | LayerClipboard | null = null
+
+/** Ctrl+C — selected keyframes if any, otherwise the selected layers. */
+export function copySelection(): string {
+  const s = st()
+  const kfIds = s.selectedKeyframeIds.length ? s.selectedKeyframeIds : s.selectedKeyframeId ? [s.selectedKeyframeId] : []
+  if (kfIds.length) {
+    const items: KfClip['items'] = []
+    for (const c of s.doc.clips) {
+      for (const k of c.keyframes) for (const kf of k.keyframes) if (kfIds.includes(kf.id)) items.push({ prop: k.property, dt: kf.time, value: kf.value, easing: kf.easing, handles: kf.handles })
+      for (const fx of c.effects) for (const [p, kfs] of Object.entries(fx.paramKeyframes ?? {})) for (const kf of kfs) {
+        if (kfIds.includes(kf.id)) items.push({ prop: p, fxType: fx.type, dt: kf.time, value: kf.value, easing: kf.easing, handles: kf.handles })
+      }
+    }
+    if (items.length) {
+      const t0 = Math.min(...items.map(i => i.dt))
+      for (const i of items) i.dt -= t0
+      clipboard = { kind: 'keyframes', items }
+      return `${items.length} keyframe${items.length > 1 ? 's' : ''} copied`
+    }
+  }
+  const cs = selectedClips()
+  if (cs.length) {
+    clipboard = { kind: 'layers', clips: JSON.parse(JSON.stringify(cs)), t0: Math.min(...cs.map(c => c.start)) }
+    return `${cs.length} layer${cs.length > 1 ? 's' : ''} copied`
+  }
+  return ''
+}
+
+/** Ctrl+V — keyframes land at the CTI on the selected layer(s); layers paste at the CTI on top. */
+export function pasteClipboard(): string {
+  if (!clipboard) return ''
+  const s = st()
+  const t = now()
+  if (clipboard.kind === 'keyframes') {
+    const targets = selectedClips()
+    if (!targets.length) return 'Select a layer to paste keyframes into'
+    const items = clipboard.items
+    const newKf: string[] = []
+    s.mutate(d => {
+      for (const tc of targets) {
+        const c = d.clips.find(x => x.id === tc.id)
+        if (!c) continue
+        const lt0 = Math.max(0, t - c.start)
+        for (const it of items) {
+          const kf = { id: uid('kf'), time: lt0 + it.dt, value: it.value, easing: it.easing, handles: it.handles }
+          newKf.push(kf.id)
+          if (it.fxType) {
+            const fx = c.effects.find(e => e.type === it.fxType)
+            if (!fx) continue
+            fx.paramKeyframes = fx.paramKeyframes ?? {}
+            const arr = fx.paramKeyframes[it.prop] ?? (fx.paramKeyframes[it.prop] = [])
+            const i = arr.findIndex(k => Math.abs(k.time - kf.time) < 1e-3)
+            if (i >= 0) arr.splice(i, 1)
+            arr.push(kf); arr.sort((a, b) => a.time - b.time)
+          } else {
+            let tr = c.keyframes.find(k => k.property === it.prop)
+            if (!tr) { tr = { property: it.prop, keyframes: [] }; c.keyframes.push(tr) }
+            tr.keyframes = tr.keyframes.filter(k => Math.abs(k.time - kf.time) >= 1e-3)
+            tr.keyframes.push(kf); tr.keyframes.sort((a, b) => a.time - b.time)
+          }
+        }
+      }
+    })
+    useEditorStore.setState({ selectedKeyframeIds: newKf, selectedKeyframeId: newKf[newKf.length - 1] ?? null })
+    return `${items.length} keyframe${items.length > 1 ? 's' : ''} pasted`
+  }
+  const cb = clipboard
+  const ids: string[] = []
+  s.mutate(d => {
+    const idx = insertIndex(d)
+    const idMap = new Map<string, string>()
+    for (const src of cb.clips) idMap.set(src.id, uid('clip'))
+    // keep original stacking order: iterate bottom-up so the first ends on top
+    for (const src of [...cb.clips].reverse()) {
+      const copy = JSON.parse(JSON.stringify(src)) as Clip
+      copy.id = idMap.get(src.id)!
+      copy.start = Math.max(0, t + (src.start - cb.t0))
+      if (copy.parentId && idMap.has(copy.parentId)) copy.parentId = idMap.get(copy.parentId)!
+      const track = newTrackFor(d, copy.kind, copy.name.slice(0, 28), idx)
+      copy.trackId = track.id
+      d.clips.push(copy)
+      ids.push(copy.id)
+    }
+  })
+  s.selectMany(ids)
+  return `${cb.clips.length} layer${cb.clips.length > 1 ? 's' : ''} pasted`
+}
+
+export function hasClipboard() { return clipboard?.kind ?? null }
+
+// ------------------------------------------------------------------ pre-comps
+/** Layer > Pre-compose (Ctrl+Shift+C): selected layers move into a new comp. */
+export function precomposeSelected(name?: string): string | null {
+  const cs = selectedClips()
+  if (!cs.length) return null
+  let newId: string | null = null
+  st().mutate(d => {
+    const ids = new Set(cs.map(c => c.id))
+    const moving = d.clips.filter(c => ids.has(c.id))
+    const t0 = Math.min(...moving.map(c => c.start))
+    const t1 = Math.max(...moving.map(c => c.start + c.duration))
+    // stacking: top-most selected track is where the pre-comp layer goes
+    const trackIdx = Math.min(...moving.map(c => d.tracks.findIndex(t => t.id === c.trackId)).filter(i => i >= 0))
+    const usedTracks = new Set(moving.map(c => c.trackId))
+    const innerTracks = d.tracks.filter(t => usedTracks.has(t.id)).map(t => ({ ...t, id: uid('track') }))
+    const trackMap = new Map<string, string>()
+    d.tracks.filter(t => usedTracks.has(t.id)).forEach((t, i) => trackMap.set(t.id, innerTracks[i].id))
+    const innerClips = moving.map(c => ({ ...JSON.parse(JSON.stringify(c)), trackId: trackMap.get(c.trackId)!, start: c.start - t0 }) as Clip)
+    // parents outside the pre-comp can't be reached from inside
+    for (const c of innerClips) if (c.parentId && !ids.has(c.parentId)) c.parentId = null
+    const n = (d.precomps?.length ?? 0) + 1
+    const pcId = uid('comp')
+    d.precomps = [...(d.precomps ?? []), {
+      id: pcId, name: name ?? `${moving.length === 1 ? moving[0].name : 'Pre-comp'} ${n}`,
+      composition: { ...d.composition, duration: Math.max(0.5, t1 - t0) },
+      tracks: innerTracks, clips: innerClips,
+    }]
+    d.clips = d.clips.filter(c => !ids.has(c.id))
+    for (const c of d.clips) if (c.parentId && ids.has(c.parentId)) c.parentId = null
+    // drop tracks that are now empty
+    d.tracks = d.tracks.filter(t => !usedTracks.has(t.id) || d.clips.some(c => c.trackId === t.id))
+    const track: Track = { id: uid('track'), kind: 'video', name: `Pre-comp ${n}`, locked: false, visible: true, muted: false, height: 64 }
+    d.tracks.splice(Math.max(0, Math.min(trackIdx, d.tracks.length)), 0, track)
+    newId = uid('clip')
+    d.clips.push({ ...makeClipBase(track.id, d.precomps[d.precomps.length - 1].name, t0, t1 - t0), id: newId, kind: 'precomp', precompId: pcId, label: 15 })
+  })
+  if (newId) st().select(newId)
+  return newId
+}
+
+/** Open a comp in the viewer/timeline (double-click a pre-comp layer or Project item). */
+export function openComp(id: string) {
+  const s = st()
+  const cur = s.doc.compId ?? 'main'
+  if (id === cur) return
+  s.mutate(d => {
+    const stack = d.compStack ?? []
+    const at = stack.indexOf(id)
+    const nd = openCompIn(d, id)
+    Object.assign(d, nd)
+    d.compStack = at >= 0 ? stack.slice(0, at) : [...stack, cur]
+  })
+  s.select(null)
+  playbackEngine.pause()
+  playbackEngine.seek(0)
+}
+
+export function closeComp() {
+  const stack = st().doc.compStack ?? []
+  if (stack.length) openComp(stack[stack.length - 1])
+}
+
+/** Add an existing comp as a layer of the open comp (drag from Project). */
+export function addCompLayer(pcId: string, at = now()) {
+  const s = st()
+  const pc = s.doc.precomps?.find(p => p.id === pcId)
+  if (!pc || pcId === (s.doc.compId ?? 'main')) return
+  let id: string | null = null
+  s.mutate(d => {
+    const track = newTrackFor(d, 'precomp', pc.name, insertIndex(d))
+    id = uid('clip')
+    d.clips.push({ ...makeClipBase(track.id, pc.name, Math.max(0, at), pc.composition.duration), id, kind: 'precomp', precompId: pc.id, label: 15 })
+  })
+  if (id) s.select(id)
 }

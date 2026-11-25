@@ -496,8 +496,13 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
   const [penPts, setPenPts] = useState<{ x: number; y: number }[]>([])
   const [rubber, setRubber] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const aeOverlayRef = useRef<HTMLCanvasElement>(null)
+  const cacheRef = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    playbackEngine.attachCacheOverlay(cacheRef.current)
+    return () => playbackEngine.attachCacheOverlay(null)
+  }, [])
   type AEDrag =
-    | { kind: 'move'; clipId: string; sx: number; sy: number; x0: number; y0: number; moved: boolean }
+    | { kind: 'move'; clipId: string; sx: number; sy: number; x0: number; y0: number; moved: boolean; others: { id: string; x0: number; y0: number }[] }
     | { kind: 'rotate'; clipId: string; cx: number; cy: number; a0: number; r0: number; moved: boolean }
     | { kind: 'anchor'; clipId: string; sx: number; sy: number; ax0: number; ay0: number; x0: number; y0: number; moved: boolean }
     | { kind: 'pan'; sx: number; sy: number; px: number; py: number }
@@ -535,6 +540,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
       return a && a.width > 0 ? [a.width, a.height] : [d.composition.width, d.composition.height]
     }
     if (c.kind === 'solid' || c.kind === 'adjustment' || c.kind === 'shape' || c.kind === 'text') return [d.composition.width, d.composition.height]
+    if (c.kind === 'precomp') { const pc = d.precomps?.find(p => p.id === c.precompId); return pc ? [pc.composition.width, pc.composition.height] : null }
     return null
   }
   const visualLayersTopFirst = () => {
@@ -603,8 +609,9 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
       ctx.setLineDash([])
       ctx.beginPath(); ctx.moveTo(w / 2 - 8, h / 2); ctx.lineTo(w / 2 + 8, h / 2); ctx.moveTo(w / 2, h / 2 - 8); ctx.lineTo(w / 2, h / 2 + 8); ctx.stroke()
     }
-    const sel = d.clips.find(c => c.id === useEditorStore.getState().selectedClipId)
     const t = playbackEngine.currentTime
+    const selIds = useEditorStore.getState().selectedClipIds
+    for (const sel of d.clips.filter(c => selIds.includes(c.id) || c.id === useEditorStore.getState().selectedClipId))
     if (sel && sel.kind !== 'audio' && sel.kind !== 'camera' && sel.kind !== 'null' && t >= sel.start && t < sel.start + sel.duration) {
       const sz = sizeOf(sel)
       ctx.strokeStyle = '#4f9ff0'
@@ -731,7 +738,8 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     if ((t === 'rotate' || t === 'anchor') && selClip) target = selClip
     if (!target) { if (t === 'select') s.select(null); return true }
     if (target.locked) return true
-    s.select(target.id)
+    if (e.shiftKey || e.ctrlKey || e.metaKey) { s.toggleSelect(target.id); return true }
+    s.select(target.id) // keeps an existing multi-selection when clicking one of its members
     e.currentTarget.setPointerCapture?.(e.pointerId)
     const lt = playbackEngine.currentTime - target.start
     if (t === 'rotate') {
@@ -741,7 +749,11 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     } else if (t === 'anchor') {
       aeDrag.current = { kind: 'anchor', clipId: target.id, sx: cx, sy: cy, ax0: evalProperty(target, 'anchorX', lt), ay0: evalProperty(target, 'anchorY', lt), x0: evalProperty(target, 'x', lt), y0: evalProperty(target, 'y', lt), moved: false }
     } else {
-      aeDrag.current = { kind: 'move', clipId: target.id, sx: cx, sy: cy, x0: evalProperty(target, 'x', lt), y0: evalProperty(target, 'y', lt), moved: false }
+      const multi = useEditorStore.getState().selectedClipIds
+      const t0 = playbackEngine.currentTime
+      const others = multi.length > 1 ? s.doc.clips.filter(c => multi.includes(c.id) && c.id !== target!.id && !c.locked && c.kind !== 'audio')
+        .map(c => ({ id: c.id, x0: evalProperty(c, 'x', t0 - c.start), y0: evalProperty(c, 'y', t0 - c.start) })) : []
+      aeDrag.current = { kind: 'move', clipId: target.id, sx: cx, sy: cy, x0: evalProperty(target, 'x', lt), y0: evalProperty(target, 'y', lt), moved: false, others }
     }
     return true
   }
@@ -780,6 +792,12 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
         if (e.shiftKey) { if (Math.abs(nx - d.x0) > Math.abs(ny - d.y0)) ny = d.y0; else nx = d.x0 }
         writePropIn(doc2, c, 'x', Math.round(nx))
         writePropIn(doc2, c, 'y', Math.round(ny))
+        for (const o of d.others) {
+          const oc = doc2.clips.find(x => x.id === o.id)
+          if (!oc) continue
+          writePropIn(doc2, oc, 'x', Math.round(o.x0 + (nx - d.x0)))
+          writePropIn(doc2, oc, 'y', Math.round(o.y0 + (ny - d.y0)))
+        }
       } else if (d.kind === 'rotate') {
         let r = d.r0 - ((Math.atan2(cy - d.cy, cx - d.cx) - d.a0) * 180) / Math.PI
         if (e.shiftKey) r = Math.round(r / 45) * 45
@@ -871,6 +889,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
           onDoubleClick={() => { if (ae && tool === 'select') { const s = useEditorStore.getState(); const c = s.doc.clips.find(c => c.id === s.selectedClipId); if (c?.kind === 'text') s.setPanel('text') } }}
           {...(trackerPick ? { 'data-picking': '1' } : {})}
         />
+        <canvas ref={cacheRef} className={`absolute left-0 top-0 z-[2] pointer-events-none ${ae ? '' : 'rounded-lg'}`} style={{ width: cssSize.w || undefined, height: cssSize.h || undefined, visibility: 'hidden' }} aria-hidden="true" />
         {ae && guides.checker && <div className="absolute inset-0 -z-10 ae-checker" />}
         {ae && (
           <canvas ref={aeOverlayRef} className="absolute left-0 top-0 z-[4] pointer-events-none" style={{ width: cssSize.w || undefined, height: cssSize.h || undefined }} />
@@ -1047,6 +1066,7 @@ export function TransportBar() {
         {[0.25, 0.5, 1, 1.5, 2].map(r => <option key={r} value={r}>{r}x</option>)}
       </select>
       <button className={`p-2 ${loop ? 'text-amber-400' : 'text-zinc-500'}`} onClick={() => setLoop(l => !l)} aria-label="Loop"><Repeat size={16} /></button>
+      <button className="p-2 text-[#3ccf55]" onClick={() => { if (playbackEngine.ramBuilding) playbackEngine.cancelRamPreview(); else { setLoop(true); void playbackEngine.ramPreview() } }} aria-label="RAM preview" title="RAM Preview: render to memory, then play smooth"><Zap size={16} /></button>
       <button
         className={`p-2 ${muted ? 'text-red-400' : 'text-zinc-400'}`}
         onClick={() => { setMuted(playbackEngine.toggleMute()); void import('@/lib/engine/audio').then(({ audioEngine }) => audioEngine.unlock()) }}

@@ -13,6 +13,7 @@ import { Compositor, setCompositorFps } from './compositor'
 import { clipSourceTime, clipAverageSpeed } from './speed'
 import { audioEngine } from './audio'
 import { mediaManager } from '../media/mediaManager'
+import { flattenForMedia } from './precomp'
 
 export interface PlaybackState {
   playing: boolean
@@ -195,10 +196,27 @@ class PlaybackEngine {
       canvas.height !== this.rH ||
       this.seekInFlight.size > 0
     if (dirty) this.rChanged = nowT
-    if (this.state.playing && !dirty) {
+    this.validateCache(doc, canvas)
+    const cached = this.cache.get(compFrame)
+    if (cached && (newFrame || !this.showingCache || doc !== this.rDoc)) {
+      // ---- RAM preview hit: blit the cached frame, no decode, no GPU pipeline ----
+      if (!this.showingCache) this.enterCachedMode()
+      this.drawCached(cached)
+      if (newFrame && this.state.playing) this.statsFrames++
+      this.rFrame = compFrame
+      this.rDoc = doc
+      this.rTime = this.state.time
+      this.rCompare = this.compareMode
+      this.rW = canvas.width
+      this.rH = canvas.height
+      audioEngine.sync(flattenForMedia(doc), this.state.time, this.state.playing, this.muted)
+    } else if (cached) {
+      audioEngine.sync(flattenForMedia(doc), this.state.time, this.state.playing, this.muted)
+    } else if (this.state.playing && !dirty) {
       // between comp frames: keep media/audio in sync, skip the GPU work
-      this.driveMedia(doc, this.state.time, true)
-      audioEngine.sync(doc, this.state.time, true, this.muted)
+      const md = flattenForMedia(doc)
+      this.driveMedia(md, this.state.time, true)
+      audioEngine.sync(md, this.state.time, true, this.muted)
     } else if (dirty || nowT - this.rChanged < 600 || nowT - this.rLast > 250) {
       this.rLast = nowT
       this.rFrame = compFrame
@@ -207,12 +225,19 @@ class PlaybackEngine {
       this.rCompare = this.compareMode
       this.rW = canvas.width
       this.rH = canvas.height
-      this.driveMedia(doc, this.state.time, this.state.playing)
-      audioEngine.sync(doc, this.state.time, this.state.playing, this.muted)
+      const md = flattenForMedia(doc)
+      this.driveMedia(md, this.state.time, this.state.playing)
+      audioEngine.sync(md, this.state.time, this.state.playing, this.muted)
+      if (this.showingCache) this.leaveCachedMode()
       this.compositor.render(doc, mediaManager, {
         time: this.state.time,
         bypassEffects: this.compareMode,
       })
+      if (newFrame && this.state.playing) this.statsFrames++
+      // passive caching: a frame played once replays from RAM (AE green bar)
+      if (this.cacheEnabled && this.seekInFlight.size === 0 && this.mediaSettled(doc, this.state.time) && (this.state.playing || nowT - this.rChanged > 300)) {
+        this.captureFrame(compFrame, canvas)
+      }
     }
     // mobile memory guard: every ~2s release GPU textures of clips far from the playhead
     const nowMs = now0()
@@ -224,7 +249,6 @@ class PlaybackEngine {
       }
       this.compositor.trimUnusedTextures(active)
     }
-    this.statsFrames++
     if (now0() - this.statsStart > 1000) {
       this.fpsMeasured = Math.round((this.statsFrames * 1000) / (now0() - this.statsStart))
       this.statsFrames = 0
@@ -240,6 +264,182 @@ class PlaybackEngine {
   }
 
   fpsMeasured = 0
+
+  // ================= RAM preview (frame cache) =================
+  /** comp frame index → rendered frame at preview resolution */
+  private cache = new Map<number, ImageBitmap>()
+  private cacheDoc: ProjectDoc | null = null
+  private cacheSig = ''
+  private cacheBytes = 0
+  private pending = new Set<number>()
+  cacheEnabled = true
+  private overlay: HTMLCanvasElement | null = null
+  private showingCache = false
+  private cacheEvtT = 0
+  ramBuilding = false
+
+  /** Budget: AE stops caching when RAM is full. iOS Safari kills tabs early. */
+  get cacheBudget(): number {
+    const nav = (typeof navigator !== 'undefined' ? navigator : {}) as Navigator & { deviceMemory?: number }
+    const ios = typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent)
+    if (ios) return 320 * 1024 * 1024
+    const gb = nav.deviceMemory ?? 4
+    return Math.min(2048, Math.max(256, gb * 160)) * 1024 * 1024
+  }
+
+  attachCacheOverlay(cv: HTMLCanvasElement | null) {
+    this.overlay = cv
+    if (cv) cv.style.visibility = 'hidden'
+    this.showingCache = false
+  }
+
+  private enterCachedMode() {
+    this.showingCache = true
+    if (this.overlay) this.overlay.style.visibility = 'visible'
+    // stop decoding while the cache plays — this is where the smoothness comes from
+    for (const [, pool] of (mediaManager as unknown as { pools: Map<string, Map<string, { el: HTMLVideoElement }>> }).pools) {
+      for (const [, e] of pool) if (!e.el.paused) e.el.pause()
+    }
+  }
+  private leaveCachedMode() {
+    this.showingCache = false
+    if (this.overlay) this.overlay.style.visibility = 'hidden'
+  }
+  private drawCached(bmp: ImageBitmap) {
+    const ov = this.overlay
+    if (!ov) return
+    if (ov.width !== bmp.width || ov.height !== bmp.height) { ov.width = bmp.width; ov.height = bmp.height }
+    const ctx = ov.getContext('2d')
+    ctx?.drawImage(bmp, 0, 0)
+  }
+
+  private validateCache(doc: ProjectDoc, canvas: HTMLCanvasElement) {
+    const sig = `${canvas.width}x${canvas.height}|${this.compareMode ? 1 : 0}`
+    if (doc !== this.cacheDoc || sig !== this.cacheSig) {
+      // any edit invalidates (whole-comp granularity keeps this simple and correct)
+      if (this.cacheDoc && (this.cache.size || this.pending.size)) this.clearCache()
+      this.cacheDoc = doc
+      this.cacheSig = sig
+    }
+  }
+
+  clearCache() {
+    for (const b of this.cache.values()) { try { b.close() } catch { /* ok */ } }
+    this.cache.clear()
+    this.pending.clear()
+    this.cacheBytes = 0
+    if (this.showingCache) this.leaveCachedMode()
+    this.notifyCache(true)
+  }
+
+  private mediaSettled(doc: ProjectDoc, t: number): boolean {
+    const md = flattenForMedia(doc)
+    for (const c of md.clips) {
+      if (c.kind !== 'video' || t < c.start || t >= c.start + c.duration) continue
+      const el = mediaManager.getElement(c as VideoClip)
+      if (!el || el.readyState < 2 || el.seeking) return false
+    }
+    return true
+  }
+
+  private captureFrame(frame: number, canvas: HTMLCanvasElement) {
+    if (this.cache.has(frame) || this.pending.has(frame)) return
+    const bytes = canvas.width * canvas.height * 4
+    if (this.cacheBytes + bytes > this.cacheBudget) return
+    if (typeof createImageBitmap !== 'function') return
+    const doc = this.cacheDoc
+    this.pending.add(frame)
+    // the WebGL drawing buffer is snapshotted synchronously at call time
+    createImageBitmap(canvas).then(bmp => {
+      if (doc !== this.cacheDoc || !this.pending.has(frame)) { bmp.close(); return }
+      this.pending.delete(frame)
+      this.cache.set(frame, bmp)
+      this.cacheBytes += bytes
+      this.notifyCache()
+    }).catch(() => this.pending.delete(frame))
+  }
+
+  private notifyCache(force = false) {
+    const n = now0()
+    if (!force && n - this.cacheEvtT < 200) return
+    this.cacheEvtT = n
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('as-cache'))
+  }
+
+  /** Cached frames as merged [start, end) ranges in seconds (green bar). */
+  cacheRanges(): [number, number][] {
+    const fps = Math.max(1, this.doc?.composition.fps ?? 30)
+    const fr = [...this.cache.keys()].sort((a, b) => a - b)
+    const out: [number, number][] = []
+    for (const f of fr) {
+      const last = out[out.length - 1]
+      if (last && Math.abs(last[1] - f / fps) < 1e-6) last[1] = (f + 1) / fps
+      else out.push([f / fps, (f + 1) / fps])
+    }
+    return out
+  }
+
+  get cacheStats() { return { frames: this.cache.size, mb: Math.round(this.cacheBytes / 1048576), budgetMb: Math.round(this.cacheBudget / 1048576) } }
+
+  /**
+   * RAM Preview (Numpad 0): render every frame of the work area frame-accurately
+   * into the cache, then play it back in real time from RAM, looping.
+   */
+  async ramPreview(onProgress?: (p: number) => void): Promise<void> {
+    const doc = this.doc
+    const canvas = (this.compositor as unknown as { canvas: HTMLCanvasElement | null }).canvas
+    if (!doc || !canvas || this.ramBuilding) return
+    this.pause()
+    this.syncCanvasSize(canvas)
+    this.validateCache(doc, canvas)
+    const fps = Math.max(1, doc.composition.fps)
+    const start = this.state.inPoint ?? 0
+    const end = this.state.outPoint ?? projectDuration(doc)
+    const f0 = Math.floor(start * fps + 1e-6), f1 = Math.max(f0 + 1, Math.ceil(end * fps - 1e-6))
+    this.ramBuilding = true
+    this.suspended = true
+    if (this.showingCache) this.leaveCachedMode()
+    try {
+      for (let f = f0; f < f1; f++) {
+        if (!this.ramBuilding || this.doc !== doc) break
+        if (this.cache.has(f)) continue
+        const bytes = canvas.width * canvas.height * 4
+        if (this.cacheBytes + bytes > this.cacheBudget) break
+        const t = f / fps
+        // frame-accurate seeks of every active video (incl. inside pre-comps)
+        const md = flattenForMedia(doc)
+        const seeks: Promise<unknown>[] = []
+        for (const c of md.clips) {
+          if (c.kind !== 'video' || t < c.start || t >= c.start + c.duration) continue
+          const el = mediaManager.getElement(c as VideoClip)
+          if (!el) continue
+          if (!el.paused) el.pause()
+          seeks.push(mediaManager.seek(el, clipSourceTime(c as VideoClip, t - c.start)))
+        }
+        await Promise.all(seeks)
+        this.state.time = t
+        this.compositor.render(doc, mediaManager, { time: t, bypassEffects: this.compareMode })
+        this.captureFrame(f, canvas)
+        this.emit()
+        onProgress?.((f - f0 + 1) / (f1 - f0))
+        if ((f - f0) % 4 === 0) await new Promise(r => setTimeout(r, 0))
+      }
+      // wait for the last bitmaps
+      for (let i = 0; i < 50 && this.pending.size; i++) await new Promise(r => setTimeout(r, 10))
+    } finally {
+      this.suspended = false
+      this.lastFrameTime = 0
+    }
+    if (!this.ramBuilding) return // cancelled
+    this.ramBuilding = false
+    this.notifyCache(true)
+    this.state.time = start
+    this.state.loop = true
+    window.dispatchEvent(new Event('as-loop'))
+    this.play()
+  }
+
+  cancelRamPreview() { this.ramBuilding = false }
 
   /** Public so the realtime export can drive the shared video elements itself. */
   driveMedia(doc: ProjectDoc, time: number, playing: boolean) {
@@ -293,6 +493,7 @@ class PlaybackEngine {
   }
 
   toggle() {
+    if (this.ramBuilding) { this.cancelRamPreview(); return }
     if (this.state.playing) this.pause(); else this.play()
   }
 

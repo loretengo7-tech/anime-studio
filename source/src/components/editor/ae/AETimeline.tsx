@@ -22,12 +22,13 @@ import { GraphEditor } from '../GraphEditor'
 import { Timeline as TrackTimeline } from '../Timeline'
 import {
   layerOrder, TRANSFORM_PROPS, isPropAnimated, toggleStopwatch, toggleKeyAtCTI, jumpKeyframe,
-  liveBegin, liveApply, liveEnd, writePropIn, tcAE, parseTime, moveLayerTo, addAssetLayer,
+  liveBegin, liveApply, liveEnd, writePropIn, tcAE, parseTime, moveLayerTo, addAssetLayer, openComp, addCompLayer,
 } from './aeActions'
 import { applyEffectToClip } from './AEPanels'
+import { exprErrors, EXPRESSION_PRESETS } from '@/lib/engine/expressions'
 import {
   Eye, EyeOff, Volume2, Lock, ChevronRight, ChevronDown, Search, Box, Timer, LineChart,
-  Mountain, MountainSnow, Trash2, Rows3, Ghost,
+  Mountain, MountainSnow, Trash2, Rows3, Ghost, Zap,
 } from 'lucide-react'
 
 const ROW_H = 22
@@ -36,7 +37,7 @@ const RULER_H = 32
 const AV_W = 80
 const NUM_W = 44
 const NAME_W = 178
-const SW_W = 66
+const SW_W = 90
 const MODE_W = 140
 const PARENT_W = 112
 
@@ -44,11 +45,86 @@ type Row =
   | { kind: 'layer'; clip: Clip; index: number }
   | { kind: 'group'; clip: Clip; id: string; label: string; depth: number; open: boolean; onDelete?: () => void; fx?: EffectInstance }
   | { kind: 'prop'; clip: Clip; label: string; depth: number; props: PropSpec }
+  | { kind: 'expr'; clip: Clip; group: string; depth: number }
 
 type PropSpec =
   | { type: 'transform'; key: string; parts: typeof TRANSFORM_PROPS[number]['props'] }
   | { type: 'effect'; fxId: string; param: string; min: number; max: number; step: number }
   | { type: 'volume' }
+
+function useCacheTick() {
+  const [, setT] = useState(0)
+  useEffect(() => {
+    const h = () => setT(t => (t + 1) % 1e6)
+    window.addEventListener('as-cache', h)
+    return () => window.removeEventListener('as-cache', h)
+  }, [])
+}
+
+/** AE green bar: frames held in the RAM preview cache */
+function CacheBar({ pps }: { pps: number }) {
+  useCacheTick()
+  return (
+    <>
+      {playbackEngine.cacheRanges().map(([a, b], i) => (
+        <div key={i} className="absolute top-[9px] h-[3px] bg-[#3ccf55] pointer-events-none" style={{ left: a * pps, width: Math.max(1, (b - a) * pps) }} />
+      ))}
+    </>
+  )
+}
+
+function CacheInfo() {
+  useCacheTick()
+  const s = playbackEngine.cacheStats
+  if (!s.frames) return null
+  return (
+    <button className="text-[10px] text-[#3ccf55] as-mono px-1 hover:underline whitespace-nowrap" title="Frames in RAM — click to purge the cache" onClick={() => playbackEngine.clearCache()}>
+      RAM {s.frames}f · {s.mb}/{s.budgetMb}MB
+    </button>
+  )
+}
+
+function rowH(r: Row) { return r.kind === 'layer' ? ROW_H : r.kind === 'expr' ? 46 : PROP_H }
+
+/** AE motion-blur switch glyph */
+function MBIcon({ on = true }: { on?: boolean }) {
+  return (
+    <svg width="13" height="10" viewBox="0 0 13 10" style={{ opacity: on ? 1 : 0.35 }}>
+      <circle cx="9" cy="5" r="3.2" fill="currentColor" />
+      <path d="M0 3.5h4M1 5h3M0 6.5h4" stroke="currentColor" strokeWidth="1" />
+    </svg>
+  )
+}
+
+function ExprCells({ clip, group, pad, onChange, onRemove }: { clip: Clip; group: string; pad: number; onChange: (c: string) => void; onRemove: () => void }) {
+  const code = clip.expressions?.[group] ?? ''
+  const [draft, setDraft] = useState(code)
+  useEffect(() => setDraft(code), [code])
+  const [, force] = useState(0)
+  useEffect(() => playbackEngine.subscribeThrottled(() => force(n => (n + 1) % 1e6), 400), [])
+  const err = exprErrors.get(`${clip.id}:${group}`)
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation()
+  return (
+    <div className="flex items-start gap-1.5 h-full w-full py-[3px] pr-2" style={{ paddingLeft: pad }} onPointerDown={stop}>
+      <span className="text-[11px] text-[#e0605c] font-mono mt-[3px] shrink-0" title="Expression">=</span>
+      <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+        <textarea
+          className={`aet-input !h-[24px] w-full font-mono !text-[11px] resize-none leading-[20px] ${err ? '!border-[#e0605c]' : ''}`}
+          value={draft} spellCheck={false}
+          onChange={e => setDraft(e.target.value)}
+          onBlur={() => { if (draft !== code) onChange(draft) }}
+          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onChange(draft) } }}
+        />
+        <span className={`text-[10px] truncate ${err ? 'text-[#e0605c]' : 'text-zinc-500'}`}>{err ? `⚠ ${err}` : 'Enter aplica · wiggle(f,a) · loopOut() · shake() · beat(bpm) · time · value'}</span>
+      </div>
+      <select className="aet-input w-[18px] !px-0 shrink-0" value="" title="Expression presets" onChange={e => { if (e.target.value) onChange(e.target.value) }}>
+        <option value="">▾</option>
+        {EXPRESSION_PRESETS.filter(p => p.group === 'any' || p.group === group).map(p => <option key={p.label} value={p.code}>{p.label}</option>)}
+      </select>
+      <button className="aet-sw !w-4 shrink-0" title="Remove expression" onClick={onRemove}><Trash2 size={11} /></button>
+    </div>
+  )
+}
 
 function hexShade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16)
@@ -72,6 +148,10 @@ export function AETimeline() {
   const selectedKeyframeId = useEditorStore(s => s.selectedKeyframeId)
   const select = useEditorStore(s => s.select)
   const selectKeyframe = useEditorStore(s => s.selectKeyframe)
+  const toggleSelect = useEditorStore(s => s.toggleSelect)
+  const selectMany = useEditorStore(s => s.selectMany)
+  const selectedClipIds = useEditorStore(s => s.selectedClipIds)
+  const selectedKeyframeIds = useEditorStore(s => s.selectedKeyframeIds)
   const mutate = useEditorStore(s => s.mutate)
   const previewActive = useEditorStore(s => s.preview !== null)
   const openMap = useUIStore(s => s.open)
@@ -161,7 +241,10 @@ export function AETimeline() {
           if (!hasTransform) break
           const rk = revealKeyOf(g.key)
           const show = revealed === 'animated' ? g.props.some(p => isPropAnimated(clip, p.p)) : !!rk && revealed.includes(rk)
-          if (show) out.push({ kind: 'prop', clip, label: g.label, depth: 1, props: { type: 'transform', key: g.key, parts: g.props } })
+          if (show || (revealed === 'animated' && clip.expressions?.[g.key])) {
+            out.push({ kind: 'prop', clip, label: g.label, depth: 1, props: { type: 'transform', key: g.key, parts: g.props } })
+            if (clip.expressions?.[g.key] !== undefined) out.push({ kind: 'expr', clip, group: g.key, depth: 1 })
+          }
         }
         if (revealed === 'animated') {
           for (const fx of clip.effects) for (const [k, kfs] of Object.entries(fx.paramKeyframes ?? {})) {
@@ -195,7 +278,10 @@ export function AETimeline() {
         const gid = `${clip.id}:transform`
         const gOpen = groupOpen[gid] ?? true
         out.push({ kind: 'group', clip, id: gid, label: 'Transform', depth: 1, open: gOpen })
-        if (gOpen) for (const g of TRANSFORM_PROPS) out.push({ kind: 'prop', clip, label: g.label, depth: 2, props: { type: 'transform', key: g.key, parts: g.props } })
+        if (gOpen) for (const g of TRANSFORM_PROPS) {
+          out.push({ kind: 'prop', clip, label: g.label, depth: 2, props: { type: 'transform', key: g.key, parts: g.props } })
+          if (clip.expressions?.[g.key] !== undefined) out.push({ kind: 'expr', clip, group: g.key, depth: 2 })
+        }
       }
       if (clip.kind === 'audio' || clip.kind === 'video') {
         const gid = `${clip.id}:audio`
@@ -266,14 +352,19 @@ export function AETimeline() {
   const onWaUp = () => { waDrag.current = null }
 
   // ---- layer bar drag (move / trim) ----
-  type BarDrag = { mode: 'move' | 'trimL' | 'trimR'; clipId: string; x0: number; start0: number; dur0: number; in0: number; moved: boolean }
+  type BarDrag = { mode: 'move' | 'trimL' | 'trimR'; clipId: string; x0: number; start0: number; dur0: number; in0: number; moved: boolean; others: { id: string; start0: number }[] }
   const barDrag = useRef<BarDrag | null>(null)
   const onBarDown = (e: React.PointerEvent, clip: Clip, mode: BarDrag['mode']) => {
     if (previewActive || clip.locked) return
     e.stopPropagation()
     ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+    if (e.ctrlKey || e.metaKey) { toggleSelect(clip.id); return }
     select(clip.id)
-    barDrag.current = { mode, clipId: clip.id, x0: e.clientX, start0: clip.start, dur0: clip.duration, in0: (clip as VideoClip).inPoint ?? 0, moved: false }
+    const multi = useEditorStore.getState().selectedClipIds
+    const others = mode === 'move' && multi.length > 1 && multi.includes(clip.id)
+      ? doc.clips.filter(c => multi.includes(c.id) && c.id !== clip.id && !c.locked).map(c => ({ id: c.id, start0: c.start }))
+      : []
+    barDrag.current = { mode, clipId: clip.id, x0: e.clientX, start0: clip.start, dur0: clip.duration, in0: (clip as VideoClip).inPoint ?? 0, moved: false, others }
   }
   const onBarMove = (e: React.PointerEvent) => {
     const d = barDrag.current
@@ -290,6 +381,8 @@ export function AETimeline() {
         const endSnap = snap(d.start0 + dt + d.dur0, c.id, snapOn) - d.dur0
         if (snapOn && Math.abs(endSnap - (d.start0 + dt)) < Math.abs(ns - (d.start0 + dt))) ns = endSnap
         c.start = Math.max(0, ns)
+        const delta = c.start - d.start0
+        for (const o of d.others) { const oc = doc2.clips.find(x => x.id === o.id); if (oc) oc.start = Math.max(0, o.start0 + delta) }
       } else if (d.mode === 'trimL') {
         let ns = snap(d.start0 + dt, c.id, snapOn)
         if (c.kind === 'video' || c.kind === 'audio') ns = Math.max(ns, d.start0 - d.in0 / Math.max(0.05, c.speed || 1))
@@ -315,13 +408,23 @@ export function AETimeline() {
   }
 
   // ---- keyframe drag ----
-  const kfDrag = useRef<{ clipId: string; kfId: string; x0: number; t0: number; moved: boolean } | null>(null)
-  const onKfDown = (e: React.PointerEvent, clip: Clip, kf: Keyframe) => {
+  const kfDrag = useRef<{ clipId: string; kfId: string; x0: number; t0: number; moved: boolean; ids: Map<string, number> } | null>(null)
+  const onKfDown = (e: React.PointerEvent, clip: Clip, kf: Keyframe, siblings: string[] = []) => {
     e.stopPropagation()
     ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
-    select(clip.id)
-    selectKeyframe(kf.id)
-    kfDrag.current = { clipId: clip.id, kfId: kf.id, x0: e.clientX, t0: kf.time, moved: false }
+    if (!useEditorStore.getState().selectedClipIds.includes(clip.id)) select(clip.id)
+    const st0 = useEditorStore.getState()
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    const alreadySel = st0.selectedKeyframeIds.includes(kf.id)
+    if (additive || !alreadySel) selectKeyframe(kf.id, additive)
+    // every keyframe that moves with this one: same-time siblings (x+y) + the selection
+    const sel = new Set([...(additive || alreadySel ? useEditorStore.getState().selectedKeyframeIds : [kf.id]), ...siblings])
+    const ids = new Map<string, number>()
+    for (const c of doc.clips) {
+      for (const k of c.keyframes) for (const x of k.keyframes) if (sel.has(x.id)) ids.set(x.id, x.time)
+      for (const fx of c.effects) for (const kfs of Object.values(fx.paramKeyframes ?? {})) for (const x of kfs) if (sel.has(x.id)) ids.set(x.id, x.time)
+    }
+    kfDrag.current = { clipId: clip.id, kfId: kf.id, x0: e.clientX, t0: kf.time, moved: false, ids }
   }
   const onKfMove = (e: React.PointerEvent) => {
     const d = kfDrag.current
@@ -331,13 +434,19 @@ export function AETimeline() {
     const clip = doc.clips.find(c => c.id === d.clipId)
     if (!clip) return
     const abs = snap(clip.start + d.t0 + (e.clientX - d.x0) / pps, undefined, !e.shiftKey)
-    const nt = Math.max(0, abs - clip.start)
+    const delta = Math.max(0, abs - clip.start) - d.t0
     liveApply(doc2 => {
-      const c = doc2.clips.find(c => c.id === d.clipId)
-      if (!c) return
-      for (const k of c.keyframes) for (const kf of k.keyframes) if (kf.id === d.kfId) kf.time = nt
-      for (const fx of c.effects) for (const kfs of Object.values(fx.paramKeyframes ?? {})) for (const kf of kfs) if (kf.id === d.kfId) kf.time = nt
-      for (const k of c.keyframes) k.keyframes.sort((a, b) => a.time - b.time)
+      for (const c of doc2.clips) {
+        for (const k of c.keyframes) {
+          let touched = false
+          for (const kf of k.keyframes) { const t0 = d.ids.get(kf.id); if (t0 !== undefined) { kf.time = Math.max(0, t0 + delta); touched = true } }
+          if (touched) k.keyframes.sort((a, b) => a.time - b.time)
+        }
+        for (const fx of c.effects) for (const kfs of Object.values(fx.paramKeyframes ?? {})) {
+          for (const kf of kfs) { const t0 = d.ids.get(kf.id); if (t0 !== undefined) kf.time = Math.max(0, t0 + delta) }
+          kfs.sort((a, b) => a.time - b.time)
+        }
+      }
     })
   }
   const onKfUp = () => {
@@ -388,9 +497,11 @@ export function AETimeline() {
   // ---- drops from Project / Effects & Presets ----
   const onDragOver = (e: React.DragEvent) => {
     const t = e.dataTransfer.types
-    if (t.includes('application/x-as-asset') || t.includes('application/x-as-effect')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }
+    if (t.includes('application/x-as-asset') || t.includes('application/x-as-effect') || t.includes('application/x-as-comp')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }
   }
   const onDrop = (e: React.DragEvent, clip?: Clip) => {
+    const compId = e.dataTransfer.getData('application/x-as-comp')
+    if (compId) { e.preventDefault(); e.stopPropagation(); addCompLayer(compId, snap(xToTime(e.clientX))); return }
     const assetId = e.dataTransfer.getData('application/x-as-asset')
     const fx = e.dataTransfer.getData('application/x-as-effect')
     if (fx) {
@@ -458,7 +569,7 @@ export function AETimeline() {
   }
 
   // ---- layer switches ----
-  const flip = (clipId: string, key: 'hidden' | 'muted' | 'solo' | 'locked' | 'shy' | 'threeD') =>
+  const flip = (clipId: string, key: 'hidden' | 'muted' | 'solo' | 'locked' | 'shy' | 'threeD' | 'motionBlur') =>
     mutate(d => { const c = d.clips.find(c => c.id === clipId); if (c) (c as unknown as Record<string, boolean>)[key] = !(c as unknown as Record<string, boolean>)[key] })
 
   const depthPad = (depth: number) => 8 + depth * 14
@@ -469,11 +580,11 @@ export function AETimeline() {
     const tops: { id: string; top: number; index: number }[] = []
     for (const r of rows) {
       if (r.kind === 'layer') tops.push({ id: r.clip.id, top: y, index: r.index })
-      y += r.kind === 'layer' ? ROW_H : PROP_H
+      y += rowH(r)
     }
     layerRowTops.current = tops
   }
-  const dropY = dropLine === null ? null : (layerRowTops.current[dropLine]?.top ?? rows.reduce((s, r) => s + (r.kind === 'layer' ? ROW_H : PROP_H), 0))
+  const dropY = dropLine === null ? null : (layerRowTops.current[dropLine]?.top ?? rows.reduce((s, r) => s + rowH(r), 0))
 
   const ticks = useMemo(() => rulerTicks(duration, pps, fps), [duration, pps, fps])
 
@@ -507,7 +618,21 @@ export function AETimeline() {
           <Search size={12} className="absolute left-1.5 top-1/2 -translate-y-1/2 text-zinc-500" />
           <input className="ginput w-full !pl-6 !py-0.5 !text-[12px]" placeholder="Search layers" value={query} onChange={e => setQuery(e.target.value)} />
         </div>
+        {(doc.compStack?.length ?? 0) > 0 && (
+          <div className="flex items-center gap-1 text-[11px] min-w-0 overflow-hidden">
+            {(doc.compStack ?? []).map(id => {
+              const pc = doc.precomps?.find(p => p.id === id)
+              const nm = id === 'main' ? (pc?.name ?? doc.name) : pc?.name ?? id
+              return <span key={id} className="flex items-center gap-1 shrink-0"><button className="text-zinc-400 hover:text-white hover:underline" onClick={() => openComp(id)}>{nm}</button><span className="text-zinc-600">▸</span></span>
+            })}
+            <span className="text-amber-400 truncate">{doc.compName}</span>
+          </div>
+        )}
         <div className="flex-1" />
+        <CacheInfo />
+        <button className="tb-btn" title="RAM Preview (0 / Numpad 0): render the work area into memory, then play it in real time" onClick={() => void playbackEngine.ramPreview()}><Zap size={14} /></button>
+        <button className="tb-btn" data-on={doc.composition.motionBlur !== false ? '1' : '0'} title="Enable Motion Blur for all layers with the Motion Blur switch set"
+          onClick={() => mutate(d => { d.composition.motionBlur = d.composition.motionBlur === false })}><MBIcon /></button>
         <button className="tb-btn" data-on={shyHidden ? '1' : '0'} title="Hide all layers with the Shy switch set" onClick={toggleShy}><Ghost size={14} /></button>
         <button className="tb-btn" data-on={graphMode ? '1' : '0'} title="Graph Editor (Shift+F3)" onClick={() => setGraphMode(!graphMode)}><LineChart size={14} /></button>
         <button className="tb-btn" title="Classic track view" onClick={() => setTrackView(true)}><Rows3 size={14} /></button>
@@ -543,7 +668,7 @@ export function AETimeline() {
               <div className="shrink-0 flex items-center gap-1 pl-1" style={{ width: NUM_W }}><span className="w-3 h-2 rounded-[1px] bg-zinc-500" />#</div>
               <div className="shrink-0 pl-1" style={{ width: NAME_W }}>Layer Name</div>
               <div className="shrink-0 flex items-center justify-around text-zinc-500" style={{ width: SW_W }} title="Shy · Effects · 3D Layer">
-                <Ghost size={12} /><span className="italic font-serif text-[12px]">fx</span><Box size={12} />
+                <Ghost size={12} /><span className="italic font-serif text-[12px]">fx</span><MBIcon /><Box size={12} />
               </div>
               {showModes && <div className="shrink-0 flex" style={{ width: MODE_W }}><span className="w-[76px] pl-1">Mode</span><span className="pl-1">TrkMat</span></div>}
               <div className="shrink-0 pl-1 flex items-center gap-1" style={{ width: PARENT_W }}>Parent &amp; Link</div>
@@ -557,6 +682,7 @@ export function AETimeline() {
                 onPointerUp={onRulerUp}
                 onPointerCancel={onRulerUp}
               >
+                <CacheBar pps={pps} />
                 {/* work area bar */}
                 <div className="absolute left-0 right-0 top-0 h-[9px] bg-[#1a1a1a]">
                   <div className="absolute top-[1px] h-[7px] bg-[#5b6574] hover:bg-[#6c7787] cursor-grab" style={{ left: wa.in * pps, width: Math.max(4, (wa.out - wa.in) * pps) }}
@@ -590,16 +716,25 @@ export function AETimeline() {
           <div className="relative">
             {rows.map((r, i) => {
               const isLayer = r.kind === 'layer'
-              const sel = r.clip.id === selectedClipId
+              const sel = r.clip.id === selectedClipId || selectedClipIds.includes(r.clip.id)
               const lab = labelOf(r.clip)
               return (
-                <div key={`${r.kind}-${r.clip.id}-${i}-${r.kind === 'group' ? r.id : r.kind === 'prop' ? r.label : ''}`} className="flex" style={{ height: isLayer ? ROW_H : PROP_H }}>
+                <div key={`${r.kind}-${r.clip.id}-${i}-${r.kind === 'group' ? r.id : r.kind === 'prop' ? r.label : r.kind === 'expr' ? r.group : ''}`} className="flex" style={{ height: rowH(r) }}>
                   {/* left columns */}
                   <div
                     className={`sticky left-0 z-20 shrink-0 ${isLayer ? 'aet-row' : 'aet-prop'}`}
                     style={{ width: LW }}
                     data-sel={isLayer && sel ? '1' : '0'}
-                    onPointerDown={() => select(r.clip.id)}
+                    onPointerDown={e => {
+                      if (e.ctrlKey || e.metaKey) { toggleSelect(r.clip.id); return }
+                      if (e.shiftKey && r.kind === 'layer') {
+                        const ids = layers.map(c => c.id)
+                        const a = ids.indexOf(useEditorStore.getState().selectedClipId ?? r.clip.id), b = ids.indexOf(r.clip.id)
+                        selectMany(ids.slice(Math.min(a, b), Math.max(a, b) + 1))
+                        return
+                      }
+                      select(r.clip.id)
+                    }}
                     onDragOver={onDragOver}
                     onDrop={e => onDrop(e, r.clip)}
                   >
@@ -640,11 +775,28 @@ export function AETimeline() {
                         {r.onDelete && <button className="ml-auto mr-2 aet-sw" title="Remove effect" onClick={e => { e.stopPropagation(); r.onDelete!() }}><Trash2 size={11} /></button>}
                       </div>
                     )}
+                    {r.kind === 'expr' && (
+                      <ExprCells clip={r.clip} group={r.group} pad={AV_W + NUM_W - 30 + depthPad(r.depth) + 22}
+                        onChange={code => mutate(d => { const c = d.clips.find(c => c.id === r.clip.id); if (c) c.expressions = { ...(c.expressions ?? {}), [r.group]: code } })}
+                        onRemove={() => mutate(d => { const c = d.clips.find(c => c.id === r.clip.id); if (!c) return; const ex = { ...(c.expressions ?? {}) }; delete ex[r.group]; c.expressions = Object.keys(ex).length ? ex : undefined })} />
+                    )}
                     {r.kind === 'prop' && (
                       <PropCells
                         row={r} fps={fps} pad={AV_W + NUM_W - 30 + depthPad(r.depth)}
-                        onStopwatch={() => {
+                        onStopwatch={(alt) => {
                           const p = r.props
+                          if (alt && p.type === 'transform') {
+                            // Alt+click stopwatch = add/remove expression (AE)
+                            mutate(d => {
+                              const c = d.clips.find(c => c.id === r.clip.id)
+                              if (!c) return
+                              const ex = { ...(c.expressions ?? {}) }
+                              if (ex[p.key] !== undefined) delete ex[p.key]
+                              else ex[p.key] = p.key === 'position' || p.key === 'rotation' ? 'wiggle(3, 25)' : 'value'
+                              c.expressions = Object.keys(ex).length ? ex : undefined
+                            })
+                            return
+                          }
                           if (p.type === 'transform') toggleStopwatch(r.clip.id, p.parts.map(x => x.p))
                           else if (p.type === 'effect') fxStopwatch(r.clip.id, p.fxId, p.param)
                           else toggleStopwatch(r.clip.id, ['volume'])
@@ -696,7 +848,7 @@ export function AETimeline() {
                         <LayerBar clip={r.clip} pps={pps} color={lab.color} sel={sel} doc={doc} onDown={onBarDown} />
                       )}
                       {r.kind === 'prop' && (
-                        <PropKeys row={r} pps={pps} selectedKeyframeId={selectedKeyframeId} onDown={onKfDown} />
+                        <PropKeys row={r} pps={pps} selected={selectedKeyframeIds.length ? selectedKeyframeIds : selectedKeyframeId ? [selectedKeyframeId] : []} onDown={onKfDown} />
                       )}
                     </div>
                   )}
@@ -753,7 +905,7 @@ function GraphOverlay({ left }: { left: number }) {
 
 function LayerCells({ clip, index, label, showModes, layers, open, onTwirl, flip, renaming, onRenameStart, onRename, onNameDown, mutate }: {
   clip: Clip; index: number; label: string; showModes: boolean; layers: Clip[]; open: boolean; onTwirl: () => void
-  flip: (id: string, k: 'hidden' | 'muted' | 'solo' | 'locked' | 'shy' | 'threeD') => void
+  flip: (id: string, k: 'hidden' | 'muted' | 'solo' | 'locked' | 'shy' | 'threeD' | 'motionBlur') => void
   renaming: boolean; onRenameStart: () => void; onRename: (n: string) => void
   onNameDown: (e: React.PointerEvent) => void
   mutate: (fn: (d: ProjectDoc) => void) => void
@@ -782,7 +934,7 @@ function LayerCells({ clip, index, label, showModes, layers, open, onTwirl, flip
         />
         <span className="text-[11px] text-zinc-400 w-4 text-right">{index}</span>
       </div>
-      <div className="shrink-0 min-w-0 flex items-center gap-1 pl-1 pr-1 h-full cursor-grab" style={{ width: NAME_W }} onPointerDown={onNameDown} onDoubleClick={onRenameStart}>
+      <div className="shrink-0 min-w-0 flex items-center gap-1 pl-1 pr-1 h-full cursor-grab" style={{ width: NAME_W }} onPointerDown={onNameDown} onDoubleClick={() => clip.kind === 'precomp' ? openComp(clip.precompId) : onRenameStart()} title={clip.kind === 'precomp' ? 'Double-click to open the pre-comp' : 'Drag to reorder · double-click to rename'}>
         <KindIcon clip={clip} />
         {renaming ? (
           <input autoFocus defaultValue={clip.name} className="aet-input flex-1 min-w-0" onPointerDown={stop}
@@ -798,6 +950,7 @@ function LayerCells({ clip, index, label, showModes, layers, open, onTwirl, flip
           onClick={() => mutate(d => { const c = d.clips.find(c => c.id === clip.id); if (!c) return; const on = c.effects.some(e => e.enabled); for (const e of c.effects) e.enabled = !on })}>
           {clip.effects.length > 0 ? (clip.effects.some(e => e.enabled) ? 'fx' : '') : ''}
         </button>
+        <button className="aet-box" title="Motion Blur" disabled={!hasVideo} onClick={() => flip(clip.id, 'motionBlur')}>{clip.motionBlur ? <MBIcon /> : null}</button>
         <button className="aet-box" title="3D Layer" disabled={!hasVideo} onClick={() => flip(clip.id, 'threeD')}>{clip.threeD ? <Box size={9} /> : null}</button>
       </div>
       {showModes && (
@@ -834,13 +987,13 @@ function LayerCells({ clip, index, label, showModes, layers, open, onTwirl, flip
 }
 
 function KindIcon({ clip }: { clip: Clip }) {
-  const t: Record<string, string> = { video: '▶', image: '▣', audio: '♪', text: 'T', solid: '■', shape: '★', null: '□', camera: '◉', adjustment: '◐' }
+  const t: Record<string, string> = { video: '▶', image: '▣', audio: '♪', text: 'T', solid: '■', shape: '★', null: '□', camera: '◉', adjustment: '◐', precomp: '⧉' }
   return <span className="w-3.5 text-center text-[10px] text-zinc-400 shrink-0 font-bold">{t[clip.kind] ?? '•'}</span>
 }
 
 function PropCells({ row, fps, pad, onStopwatch, onToggleKey, onJump, onLive }: {
   row: Extract<Row, { kind: 'prop' }>; fps: number; pad: number
-  onStopwatch: () => void; onToggleKey: () => void; onJump: (dir: -1 | 1) => void
+  onStopwatch: (alt: boolean) => void; onToggleKey: () => void; onJump: (dir: -1 | 1) => void
   onLive: (phase: 'begin' | 'move' | 'end', part: number, v: number) => void
 }) {
   const clip = row.clip
@@ -884,14 +1037,14 @@ function PropCells({ row, fps, pad, onStopwatch, onToggleKey, onJump, onLive }: 
         )}
       </div>
       <div className="flex items-center gap-1 min-w-0" style={{ paddingLeft: pad }}>
-        <button className="aet-sw !w-5" data-on={animated ? '1' : '0'} onPointerDown={stop} onClick={onStopwatch} title="Time-Vary Stopwatch">
+        <button className="aet-sw !w-5" data-on={animated ? '1' : '0'} onPointerDown={stop} onClick={e => onStopwatch(e.altKey)} title="Time-Vary Stopwatch — Alt+click adds an expression">
           <Timer size={12} className={animated ? 'text-amber-400' : ''} />
         </button>
         <span className="text-[12px] text-zinc-300 whitespace-nowrap">{row.label}</span>
         <span className="ml-3 flex items-center gap-1.5" onPointerDown={stop}>
           {values.map((v, i) => (
             <span key={i} className="flex items-center">
-              <ScrubValue value={v.v} min={v.min} max={v.max} step={v.step} onLive={(ph, nv) => onLive(ph, i, nv)} />
+              <ScrubValue value={v.v} min={v.min} max={v.max} step={v.step} onLive={(ph, nv) => onLive(ph, i, nv)} expr={p.type === 'transform' && clip.expressions?.[p.key] !== undefined} />
               {v.unit && <span className="text-zinc-500 text-[11px] ml-px">{v.unit}</span>}
               {i < values.length - 1 && <span className="text-zinc-500">,</span>}
             </span>
@@ -903,8 +1056,8 @@ function PropCells({ row, fps, pad, onStopwatch, onToggleKey, onJump, onLive }: 
 }
 
 /** AE blue scrubbable value: drag horizontally to change, click to type. */
-function ScrubValue({ value, min, max, step, onLive }: {
-  value: number; min: number; max: number; step: number
+function ScrubValue({ value, min, max, step, onLive, expr }: {
+  value: number; min: number; max: number; step: number; expr?: boolean
   onLive: (phase: 'begin' | 'move' | 'end', v: number) => void
 }) {
   const [edit, setEdit] = useState(false)
@@ -924,7 +1077,7 @@ function ScrubValue({ value, min, max, step, onLive }: {
   }
   return (
     <span
-      className="aet-value text-[12px] select-none touch-none px-[1px]"
+      className={`aet-value text-[12px] select-none touch-none px-[1px] ${expr ? '!text-[#e0605c]' : ''}`}
       onPointerDown={e => { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); drag.current = { x: e.clientX, v: value, moved: false } }}
       onPointerMove={e => {
         const d = drag.current
@@ -966,7 +1119,8 @@ function LayerBar({ clip, pps, color, sel, doc, onDown }: {
         data-sel={sel ? '1' : '0'}
         style={{ left, width, background: bg, opacity: clip.hidden ? 0.45 : 1, cursor: clip.locked ? 'not-allowed' : 'grab' }}
         onPointerDown={e => onDown(e, clip, 'move')}
-        title={`${clip.name}`}
+        onDoubleClick={() => { if (clip.kind === 'precomp') openComp(clip.precompId) }}
+        title={clip.kind === 'precomp' ? `${clip.name} — double-click to open` : clip.name}
       >
         {width > 60 && <span className="absolute left-1.5 top-0 bottom-0 flex items-center text-[10px] text-black/70 font-medium truncate pointer-events-none" style={{ maxWidth: width - 12 }}>{clip.name}</span>}
         {(clip.speed !== 1 || clip.timeRemap) && width > 40 && <span className="absolute right-2 top-0 bottom-0 flex items-center text-[9px] text-black/70 pointer-events-none">{(clip.timeRemap ? clip.timeRemap.sourceDuration / clip.duration : clip.speed).toFixed(2)}x</span>}
@@ -977,34 +1131,33 @@ function LayerBar({ clip, pps, color, sel, doc, onDown }: {
   )
 }
 
-function PropKeys({ row, pps, selectedKeyframeId, onDown }: {
-  row: Extract<Row, { kind: 'prop' }>; pps: number; selectedKeyframeId: string | null
-  onDown: (e: React.PointerEvent, clip: Clip, kf: Keyframe) => void
+function PropKeys({ row, pps, selected, onDown }: {
+  row: Extract<Row, { kind: 'prop' }>; pps: number; selected: string[]
+  onDown: (e: React.PointerEvent, clip: Clip, kf: Keyframe, siblings: string[]) => void
 }) {
   const clip = row.clip
   const p = row.props
-  let kfs: Keyframe[] = []
+  // merged keys: Position shows x+y keys at one time as ONE diamond (they move together)
+  const groups: { kf: Keyframe; ids: string[] }[] = []
+  const add = (kf: Keyframe) => {
+    const g = groups.find(g => Math.abs(g.kf.time - kf.time) < 1e-4)
+    if (g) g.ids.push(kf.id); else groups.push({ kf, ids: [kf.id] })
+  }
   if (p.type === 'transform') {
-    // merge keys of x/y (Position) etc. by time
-    const seen = new Map<string, Keyframe>()
-    for (const part of p.parts) for (const kf of clip.keyframes.find(k => k.property === part.p)?.keyframes ?? []) {
-      const k = kf.time.toFixed(4)
-      if (!seen.has(k)) seen.set(k, kf)
-    }
-    kfs = [...seen.values()]
-  } else if (p.type === 'effect') kfs = clip.effects.find(e => e.id === p.fxId)?.paramKeyframes?.[p.param] ?? []
-  else kfs = clip.keyframes.find(k => k.property === 'volume')?.keyframes ?? []
+    for (const part of p.parts) for (const kf of clip.keyframes.find(k => k.property === part.p)?.keyframes ?? []) add(kf)
+  } else if (p.type === 'effect') (clip.effects.find(e => e.id === p.fxId)?.paramKeyframes?.[p.param] ?? []).forEach(add)
+  else (clip.keyframes.find(k => k.property === 'volume')?.keyframes ?? []).forEach(add)
   return (
     <>
-      {/* layer span guide */}
       <div className="absolute top-[9px] h-px bg-white/5 pointer-events-none" style={{ left: clip.start * pps, width: clip.duration * pps }} />
-      {kfs.map(kf => {
+      {groups.map(({ kf, ids }) => {
         const ease = kf.easing === 'linear' ? 'linear' : kf.easing === 'hold' ? 'hold' : 'ease'
+        const isSel = ids.some(id => selected.includes(id))
         return (
-          <div key={kf.id} className="aet-kf" data-ease={ease} data-sel={kf.id === selectedKeyframeId ? '1' : '0'}
+          <div key={kf.id} className="aet-kf" data-ease={ease} data-sel={isSel ? '1' : '0'}
             style={{ left: (clip.start + kf.time) * pps }}
-            onPointerDown={e => onDown(e, clip, kf)}
-            title={`${kf.easing} · ${kf.time.toFixed(2)}s`} />
+            onPointerDown={e => onDown(e, clip, kf, ids)}
+            title={`${kf.easing} · ${kf.time.toFixed(2)}s — Shift+click: add to selection · Ctrl+C / Ctrl+V`} />
         )
       })}
     </>

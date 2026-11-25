@@ -1,22 +1,5 @@
 # ANIME STUDIO — Código fuente completo
 
-## v16 — Interfaz estilo After Effects + rendimiento del preview
-
-- **Escritorio / iPad horizontal (≥1024px)**: `src/components/editor/ae/` — barra de menús
-  (File, Edit, Composition, Layer, Effect, Animation, View, Window, Help), herramientas
-  (V, H, Z, W, Y, Q, G, Ctrl+T) que funcionan sobre el visor, paneles Project / Effect
-  Controls / Composition / Info / Preview / Effects & Presets / Align, espacios de trabajo
-  (Default, Animation, Effects, Minimal) y timeline de capas con interruptores, Mode, TrkMat,
-  Parent & Link, Transform con cronómetros, keyframes, work area (B/N) y CTI azul.
-  Atajos de AE: P/S/R/T/A/U, J/K, [ ], Alt+[ ], Ctrl+D, Ctrl+Shift+D, Ctrl+K, Ctrl+M, F9…
-- **Móvil (<1024px)**: mismo tema, visor con herramientas táctiles (mover/rotar capa, pellizco
-  para zoom) y timeline de pistas.
-- **Rendimiento del preview**: sin blur/aurora animada (recomponía la ventana cada frame),
-  render cuantizado a los fps de la composición (pantallas 120 Hz), subida de textura de
-  video solo cuando hay frame nuevo (`requestVideoFrameCallback`) y sin re-render de React
-  por frame en el monitor.
-- Service worker en `as-v16`.
-
 Paquete con TODO el código del proyecto. Esta versión incluye:
 
 - **FIX DE EXPORT** (el arreglo de los errores al exportar video):

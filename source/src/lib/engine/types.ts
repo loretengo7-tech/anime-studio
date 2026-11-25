@@ -7,7 +7,7 @@
  */
 
 export type TrackKind = 'video' | 'audio' | 'text' | 'adjustment'
-export type ClipKind = 'video' | 'audio' | 'text' | 'adjustment' | 'image' | 'solid' | 'shape' | 'null' | 'camera'
+export type ClipKind = 'video' | 'audio' | 'text' | 'adjustment' | 'image' | 'solid' | 'shape' | 'null' | 'camera' | 'precomp'
 export type BlendMode =
   | 'normal' | 'add' | 'screen' | 'multiply' | 'overlay' | 'lighten' | 'difference'
 
@@ -205,6 +205,13 @@ interface ClipBase {
   shy?: boolean
   /** AE label color index (see LABEL_COLORS). */
   label?: number
+  /** AE motion blur switch (needs the comp's motion blur enabled too). */
+  motionBlur?: boolean
+  /**
+   * AE-style expressions per transform group: 'position' | 'scale' | 'rotation' |
+   * 'opacity' | 'anchor'. Evaluated in evalProperty (see expressions.ts).
+   */
+  expressions?: Record<string, string>
 }
 
 /** After-Effects-style label palette (index → color). */
@@ -344,7 +351,22 @@ export interface CameraClip extends ClipBase {
   camera: CameraSettings
 }
 
-export type Clip = VideoClip | AudioClip | TextClip | AdjustmentClip | ImageClip | SolidClip | ShapeClip | NullClip | CameraClip
+/** A nested composition used as a layer (AE pre-comp). */
+export interface PrecompClip extends ClipBase {
+  kind: 'precomp'
+  precompId: string
+}
+
+export type Clip = VideoClip | AudioClip | TextClip | AdjustmentClip | ImageClip | SolidClip | ShapeClip | NullClip | CameraClip | PrecompClip
+
+/** Stored nested composition. The open comp lives in ProjectDoc.composition/tracks/clips. */
+export interface Precomp {
+  id: string
+  name: string
+  composition: Composition
+  tracks: Track[]
+  clips: Clip[]
+}
 
 export interface Track {
   id: string
@@ -362,6 +384,10 @@ export interface Composition {
   fps: number
   duration: number
   background: string
+  /** AE "Enable Motion Blur" for all layers with the switch on (default on). */
+  motionBlur?: boolean
+  /** Shutter angle in degrees (AE default 180). */
+  shutterAngle?: number
 }
 
 export interface AssetMeta {
@@ -413,6 +439,13 @@ export interface ProjectDoc {
   bpm: number
   aiHistory: AIMessage[]
   version: number
+  /** Nested compositions (pre-comps), including the root comp while a pre-comp is open. */
+  precomps?: Precomp[]
+  /** Id/name of the comp currently open in composition/tracks/clips ('main' = root). */
+  compId?: string
+  compName?: string
+  /** Breadcrumb of comps entered (ids), root first. */
+  compStack?: string[]
 }
 
 /** Preview-mode state: AI ops applied to a draft that the user approves or rejects. */

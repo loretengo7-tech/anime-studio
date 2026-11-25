@@ -17,6 +17,7 @@
  * Optional Topaz-style enhancement pass runs per frame before encoding.
  */
 import type { ProjectDoc } from './types'
+import { flattenForMedia, rootView } from './precomp'
 import { projectDuration } from './types'
 import { Compositor } from './compositor'
 import { mediaManager } from '../media/mediaManager'
@@ -92,6 +93,8 @@ export async function exportComposition(
   onProgress: (p: ExportProgress) => void,
   isCancelled: () => boolean
 ): Promise<ExportResult> {
+  // always render the MAIN comp, even if a pre-comp is open in the editor
+  doc = rootView(doc)
   const duration = projectDuration(doc)
   const notes: string[] = []
   // NOTE: the precise engine mixes audio in an OfflineAudioContext which does
@@ -139,7 +142,7 @@ async function exportPrecise(
     target: { buffer: ArrayBuffer }
   }
 
-  const hasAudioTracks = doc.clips.some(c => c.kind === 'audio' || (c.kind === 'video' && !doc.tracks.find(t => t.id === c.trackId)?.muted))
+  const hasAudioTracks = flattenForMedia(doc).clips.some(c => c.kind === 'audio' || (c.kind === 'video' && !doc.tracks.find(t => t.id === c.trackId)?.muted))
   const sampleRate = 48000
   const channels = 2
 
@@ -435,6 +438,7 @@ function planarSlice(buf: AudioBuffer, offset: number, n: number, channels: numb
 
 /** Mix all audio-bearing clips offline (volume automation, fades, filters). */
 async function mixAudioOffline(doc: ProjectDoc, duration: number, sampleRate: number, channels: number): Promise<AudioBuffer | null> {
+  doc = flattenForMedia(doc)
   const audioClips = doc.clips.filter(c => c.kind === 'audio' || c.kind === 'video') as (AudioClip | VideoClip)[]
   const audible = audioClips.filter(c => {
     const tr = doc.tracks.find(t => t.id === c.trackId)
@@ -532,6 +536,7 @@ async function mixAudioOffline(doc: ProjectDoc, duration: number, sampleRate: nu
 
 /** Seek every active video element to its exact source time for frame t. */
 async function seekAllForRender(doc: ProjectDoc, t: number): Promise<void> {
+  doc = flattenForMedia(doc)
   const seeks: Promise<void>[] = []
   for (const clip of doc.clips) {
     if (clip.kind !== 'video') continue
@@ -563,6 +568,7 @@ async function prewarmVideoElements(
   const seen = new Set<string>()
   const els: HTMLVideoElement[] = []
   for (const c of doc.clips) {
+  doc = flattenForMedia(doc)
     if (c.kind !== 'video') continue
     const vc = c as VideoClip
     if (seen.has(vc.assetId + vc.id)) continue
@@ -619,7 +625,7 @@ async function exportRealtime(
   const stream = canvas.captureStream(fps)
   // audio: attach the live WebAudio mix when there is something audible;
   // audioIncluded is only true if an audio track really joined the stream.
-  const audibleClips = doc.clips.filter(c => {
+  const audibleClips = flattenForMedia(doc).clips.filter(c => {
     if (c.kind !== 'audio' && c.kind !== 'video') return false
     const tr = doc.tracks.find(t => t.id === c.trackId)
     return !tr?.muted
@@ -664,7 +670,7 @@ async function exportRealtime(
       const t = (performance.now() - t0) / 1000
       if (isCancelled()) { cancelled = true; resolve(); return }
       if (t >= duration) { resolve(); return }
-      playbackEngine.driveMedia(doc, Math.min(t, duration), true)
+      playbackEngine.driveMedia(flattenForMedia(doc), Math.min(t, duration), true)
       audioEngine.sync(doc, Math.min(t, duration), true, false)
       compositor.render(doc, mediaManager, { time: Math.min(t, duration) })
       onProgress({ phase: 'render', progress: 0.05 + (t / duration) * 0.85, message: `Recording ${(t).toFixed(1)}s / ${duration.toFixed(1)}s` })

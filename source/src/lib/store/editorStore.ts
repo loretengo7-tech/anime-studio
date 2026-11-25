@@ -31,7 +31,11 @@ interface EditorStore {
   past: ProjectDoc[]
   future: ProjectDoc[]
   selectedClipId: string | null
+  /** All selected layers (AE multi-select). selectedClipId is the primary one. */
+  selectedClipIds: string[]
   selectedKeyframeId: string | null
+  /** Extra selected keyframes (Shift+click) — copy/paste/ease apply to all. */
+  selectedKeyframeIds: string[]
   activePanel: 'assets' | 'effects' | 'plugins' | 'inspector' | 'graph' | 'speed' | 'audio' | 'text' | 'ai' | 'projects' | 'status' | 'enhance' | 'color' | 'comp' | 'tracker' | 'export' | 'settings' | null
   preview: PreviewState | null
   aiBusy: boolean
@@ -55,7 +59,10 @@ interface EditorStore {
 
   // selection
   select: (clipId: string | null) => void
-  selectKeyframe: (kfId: string | null) => void
+  /** Ctrl/Cmd-click: add or remove a layer from the selection. */
+  toggleSelect: (clipId: string) => void
+  selectMany: (ids: string[]) => void
+  selectKeyframe: (kfId: string | null, additive?: boolean) => void
   setPanel: (panel: EditorStore['activePanel']) => void
 
   // AI
@@ -175,7 +182,9 @@ export const useEditorStore = create<EditorStore>((set, get) => {
     past: [],
     future: [],
     selectedClipId: null,
+    selectedClipIds: [],
     selectedKeyframeId: null,
+    selectedKeyframeIds: [],
     activePanel: ui.panel ?? null,
     preview: null,
     aiBusy: false,
@@ -231,8 +240,32 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       scheduleSave()
     },
 
-    select: (clipId) => set({ selectedClipId: clipId, selectedKeyframeId: null }),
-    selectKeyframe: (kfId) => set({ selectedKeyframeId: kfId }),
+    select: (clipId) => {
+      const cur = get()
+      // keep a multi-selection when clicking one of its members (AE behaviour)
+      if (clipId && cur.selectedClipIds.length > 1 && cur.selectedClipIds.includes(clipId)) {
+        set({ selectedClipId: clipId, selectedKeyframeId: null, selectedKeyframeIds: [] })
+        return
+      }
+      set({ selectedClipId: clipId, selectedClipIds: clipId ? [clipId] : [], selectedKeyframeId: null, selectedKeyframeIds: [] })
+    },
+    toggleSelect: (clipId) => {
+      const ids = get().selectedClipIds
+      const next = ids.includes(clipId) ? ids.filter(i => i !== clipId) : [...ids, clipId]
+      set({ selectedClipIds: next, selectedClipId: next.length ? (next.includes(clipId) ? clipId : next[next.length - 1]) : null, selectedKeyframeId: null, selectedKeyframeIds: [] })
+    },
+    selectMany: (ids) => set({ selectedClipIds: ids, selectedClipId: ids[ids.length - 1] ?? null, selectedKeyframeId: null, selectedKeyframeIds: [] }),
+    selectKeyframe: (kfId, additive = false) => {
+      if (!kfId) { set({ selectedKeyframeId: null, selectedKeyframeIds: [] }); return }
+      if (additive) {
+        const ids = get().selectedKeyframeIds
+        const base = ids.length ? ids : (get().selectedKeyframeId ? [get().selectedKeyframeId!] : [])
+        const next = base.includes(kfId) ? base.filter(i => i !== kfId) : [...base, kfId]
+        set({ selectedKeyframeId: next[next.length - 1] ?? null, selectedKeyframeIds: next })
+        return
+      }
+      set({ selectedKeyframeId: kfId, selectedKeyframeIds: [kfId] })
+    },
     setPanel: (panel) => {
       set({ activePanel: panel })
       persistUI(panel)
@@ -395,7 +428,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         mediaManager.dispose()
         // re-register assets into runtime
         for (const a of doc.assets ?? []) mediaManager.registerAsset(a)
-        set({ doc, serverProjectId: id, past: [], future: [], preview: null, selectedClipId: null })
+        set({ doc, serverProjectId: id, past: [], future: [], preview: null, selectedClipId: null, selectedClipIds: [] })
         get().saveLocal()
       } catch (e) {
         get().toast({ kind: 'error', title: 'Open failed', detail: e instanceof Error ? e.message : String(e) })
@@ -413,7 +446,7 @@ export const useEditorStore = create<EditorStore>((set, get) => {
       })
       set({
         doc: fresh, past: [], future: [], preview: null,
-        selectedClipId: null, serverProjectId: null,
+        selectedClipId: null, selectedClipIds: [], serverProjectId: null,
       })
       get().saveLocal()
     },
@@ -462,7 +495,7 @@ export async function recoverAutosave(): Promise<void> {
       playbackEngine.setDoc(restored)
       mediaManager.dispose()
       for (const a of restored.assets) mediaManager.registerAsset(a)
-      useEditorStore.setState({ doc: restored, past: [], future: [], preview: null, selectedClipId: null })
+      useEditorStore.setState({ doc: restored, past: [], future: [], preview: null, selectedClipId: null, selectedClipIds: [] })
       s.toast({ kind: 'success', title: 'Recovered newer autosave', detail: `Restored from ${new Date(rec.at).toLocaleTimeString()} — ${restored.clips.length} layers.` })
     }
   } catch (e) {

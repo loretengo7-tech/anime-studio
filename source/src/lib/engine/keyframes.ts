@@ -4,6 +4,7 @@
  * Real interpolation engine: linear, hold, standard eases, cubic bezier
  * with editable handles, and value sampling over any keyed property.
  */
+import { evalExpression } from './expressions'
 import type { Clip, EasingName, Keyframe, KeyframeTrack, TransformProperty, EffectInstance } from './types'
 
 export function ease(name: EasingName, t: number, handles?: Keyframe['handles']): number {
@@ -95,6 +96,18 @@ export function evalKeyframeTrack(
 
 /** Evaluate a transform property on a clip at clip-local time (seconds). */
 export function evalProperty(clip: Clip, prop: TransformProperty | 'volume', time: number): number {
+  if (clip.expressions) {
+    const e = evalExpression(clip, prop, time, evalPropertyRaw as never, 0, exprFps)
+    if (e !== null) return e
+  }
+  return evalPropertyRaw(clip, prop, time)
+}
+
+let exprFps = 30
+/** compositor tells the expression engine the comp frame rate */
+export function setExpressionFps(fps: number) { exprFps = fps }
+
+export function evalPropertyRaw(clip: Clip, prop: TransformProperty | 'volume', time: number): number {
   const track = clip.keyframes.find(k => k.property === prop)
   const fallback =
     prop === 'x' ? clip.x :

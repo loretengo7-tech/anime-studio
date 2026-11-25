@@ -11,8 +11,9 @@
  *  - Tiled .cube LUT support (works in WebGL1 / iOS Safari)
  */
 
+import type { Precomp, PrecompClip } from './types'
 import type { Clip, ProjectDoc, VideoClip, TextClip, AdjustmentClip, ImageClip, SolidClip, ShapeClip, CameraClip, CameraSettings, Composition, BlendMode, EffectInstance, Mask, MaskPoint, TrackMatte } from './types'
-import { evalProperty, evalEffectParam } from './keyframes'
+import { evalProperty, evalEffectParam, setExpressionFps } from './keyframes'
 import { evalMaskPoints } from './types'
 import { clipSourceTime } from './speed'
 import { EFFECT_MAP } from './effects'
@@ -1875,6 +1876,13 @@ export class Compositor {
         const shc = clip as ShapeClip
         src = getShapeCanvas(shc.id, shc.shape, comp.width, comp.height)
         if (src) { srcW = comp.width; srcH = comp.height }
+      } else if (clip.kind === 'precomp') {
+        // AE pre-comp: render the nested comp with its own compositor, use it as the layer source
+        const pc = (doc.precomps ?? []).find(p => p.id === (clip as PrecompClip).precompId)
+        if (pc) {
+          src = this.renderPrecomp(doc, pc, localTime * (clip.speed || 1), provider, !!opts.bypassEffects, rw / Math.max(1, comp.width))
+          if (src) { srcW = pc.composition.width; srcH = pc.composition.height }
+        }
       }
 
       const u = computeLayerUniforms(clip, localTime)
@@ -1883,16 +1891,32 @@ export class Compositor {
       u.lutEnabled = 0; u.lutSize = 0
       u.hasTex = src ? 1 : 0
 
-      // motion blur from actual movement (x/y keyframes velocity)
-      if (efOn) {
+      // AE motion blur: layer switch + comp "Enable Motion Blur". Shutter-based
+      // blur from the real transform velocity (position → directional,
+      // scale → zoom, rotation → spin), sized like a 180° shutter.
+      u.motionVec = [0, 0]
+      if (efOn && clip.motionBlur && comp.motionBlur !== false && !opts.mattePass) {
+        const shutter = (comp.shutterAngle ?? 180) / 360 / Math.max(1, comp.fps)
         const vx = this.propertyVelocityComp(clip, 'x', localTime)
         const vy = this.propertyVelocityComp(clip, 'y', localTime)
-        const spd = Math.hypot(vx, vy)
-        if (spd > 40) {
-          u.motionVec = [vx / spd * Math.min(spd / 300, 1) * 10, -vy / spd * Math.min(spd / 300, 1) * 10]
-        }
-      } else {
-        u.motionVec = [0, 0]
+        const vs = this.propertyVelocityComp(clip, 'scale', localTime)
+        const vr = this.propertyVelocityComp(clip, 'rotation', localTime)
+        const sc = Math.max(0.01, Math.abs(evalProperty(clip, 'scale', localTime)))
+        const rot0 = (evalProperty(clip, 'rotation', localTime) * Math.PI) / 180
+        const fw = srcW > 0 ? Math.min(comp.width / srcW, comp.height / srcH) * srcW : comp.width
+        const fh = srcH > 0 ? Math.min(comp.width / srcW, comp.height / srcH) * srcH : comp.height
+        // half of the shutter displacement, rotated into layer space, as a fraction of the texture
+        const hx = vx * shutter * 0.5, hy = vy * shutter * 0.5
+        const lx = hx * Math.cos(-rot0) - hy * Math.sin(-rot0)
+        const ly = hx * Math.sin(-rot0) + hy * Math.cos(-rot0)
+        const mvx = (lx / (fw * sc)) * rw, mvy = (ly / (fh * sc)) * rh
+        const ml = Math.hypot(mvx, mvy)
+        const cap = 90
+        if (ml > 0.6) u.motionVec = [mvx * Math.min(1, cap / ml), mvy * Math.min(1, cap / ml)]
+        const zr = Math.abs(vs) * shutter / sc
+        if (zr > 0.002) u.zoomBlur = Math.max(u.zoomBlur, Math.min(0.6, zr / 1.5))
+        const dth = Math.abs(vr) * shutter * Math.PI / 180
+        if (dth > 0.002) u.radialBlur = Math.max(u.radialBlur, Math.min(2, dth / 0.72))
       }
 
       // transform matrix
@@ -2236,10 +2260,34 @@ export class Compositor {
     this.ppIndex = 1 - this.ppIndex
   }
 
-  private propertyVelocityComp(clip: Clip, prop: 'x' | 'y', localTime: number): number {
+  // ---- nested compositions ----
+  depth = 0
+  private subs = new Map<string, Compositor>()
+  private renderPrecomp(doc: ProjectDoc, pc: Precomp, localTime: number, provider: SourceProvider, bypass: boolean, scale: number): HTMLCanvasElement | null {
+    if (this.depth >= 4) return null // runaway nesting guard
+    let sub = this.subs.get(pc.id)
+    if (!sub) {
+      sub = new Compositor()
+      sub.depth = this.depth + 1
+      const cv = document.createElement('canvas')
+      cv.width = Math.max(2, Math.round(pc.composition.width * scale))
+      cv.height = Math.max(2, Math.round(pc.composition.height * scale))
+      try { sub.attach(cv, this.alwaysUploadVideo) } catch { return null }
+      this.subs.set(pc.id, sub)
+    }
+    const cv = sub.canvas!
+    const w = Math.max(2, Math.round(pc.composition.width * scale)), h = Math.max(2, Math.round(pc.composition.height * scale))
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; sub.resize() }
+    const subDoc: ProjectDoc = { ...doc, composition: pc.composition, tracks: pc.tracks, clips: pc.clips }
+    sub.render(subDoc, provider, { time: localTime, bypassEffects: bypass })
+    return cv
+  }
+
+  private propertyVelocityComp(clip: Clip, prop: 'x' | 'y' | 'scale' | 'rotation', localTime: number): number {
     const dt = 1 / compFpsGlobal
     const track = clip.keyframes.find(k => k.property === prop)
-    if (!track || track.keyframes.length === 0) return 0
+    const hasExpr = !!clip.expressions && Object.keys(clip.expressions).length > 0
+    if (!hasExpr && (!track || track.keyframes.length === 0)) return 0
     const a = evalProperty(clip, prop, Math.max(0, localTime - dt))
     const b = evalProperty(clip, prop, localTime + dt)
     return (b - a) / (2 * dt)
@@ -2356,7 +2404,7 @@ export class Compositor {
 }
 
 let compFpsGlobal = 30
-export function setCompositorFps(fps: number) { compFpsGlobal = fps }
+export function setCompositorFps(fps: number) { compFpsGlobal = fps; setExpressionFps(fps) }
 
 /**
  * One-time probe: does direct video→WebGL upload produce real pixels in this

@@ -26,9 +26,10 @@ import {
   applyEffectToClip, useOutsideClick,
 } from './AEPanels'
 import {
-  newLayer, deleteSelected, duplicateSelected, splitSelected, moveLayer, selectedClip, jumpKeyframe,
+  newLayer, splitSelected, moveLayer, selectedClip, jumpKeyframe,
   setSelectedKeyEasing, deleteSelectedKeyframe, setWorkArea, clearWorkArea, layerToCTI, trimCompToWorkArea,
-  saveFrameAs, pickAndImport, patchClip,
+  saveFrameAs, pickAndImport, patchClip, copySelection, pasteClipboard, selectAllLayers, deleteSelectedLayers,
+  duplicateSelectedLayers, precomposeSelected, closeComp, selectedClips,
 } from './aeActions'
 import {
   MousePointer2, Hand, ZoomIn, RotateCw, Move, Square, Circle, PenTool, Type, Home, Download,
@@ -176,14 +177,17 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         if (lower === 't' && e.altKey && e.shiftKey) return run(() => newLayer('text'))
         if (lower === 't' && !e.altKey) return run(() => setTool('text'))
         if (lower === 'd' && e.shiftKey) return run(splitSelected)
-        if (lower === 'd') return run(duplicateSelected)
+        if (lower === 'd') return run(duplicateSelectedLayers)
+        if (lower === 'c' && e.shiftKey) return run(() => { if (!precomposeSelected()) s.toast({ kind: 'info', title: 'Select layers to pre-compose' }) })
+        if (lower === 'c') return run(() => { const m = copySelection(); if (m) s.toast({ kind: 'info', title: m }) })
+        if (lower === 'v') return run(() => { const m = pasteClipboard(); if (m) s.toast({ kind: 'info', title: m }) })
+        if (lower === 'a') return run(selectAllLayers)
         if (lower === 'k') return run(() => setDialog('comp'))
         if (lower === 'm') return run(() => setDialog('export'))
         if (lower === 'i') return run(pickAndImport)
         if (lower === 's') return run(() => { s.saveLocal(); s.toast({ kind: 'success', title: 'Project saved', detail: 'Saved in this browser. File ▸ Save As downloads a project file.' }) })
         if (lower === 'n' && e.altKey) return run(() => setDialog('projects'))
         if (k === '[' || k === ']') { const c = selectedClip(); if (c) return run(() => moveLayer(c.id, k === ']' ? (e.shiftKey ? -Infinity : -1) : (e.shiftKey ? Infinity : 1))) }
-        if (lower === 'a') return // let browsers keep select-all in fields
         if (k === '=' || k === '+') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 1 })))
         if (k === '-') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: -1 })))
         if (k === '0') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 'fit' })))
@@ -205,14 +209,14 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
             patchClip(c.id, cl => { if (!cl.keyframes.some(t => t.property === 'y' && t.keyframes.length)) cl.y += k === 'ArrowUp' ? n : -n })
           })
         }
-        case 'Delete': case 'Backspace': return run(() => { if (!deleteSelectedKeyframe()) deleteSelected() })
+        case 'Delete': case 'Backspace': return run(() => { if (!deleteSelectedKeyframe()) deleteSelectedLayers() })
         case 'F9': return run(() => setSelectedKeyEasing('easeInOut'))
         case 'F3': return run(() => setDocks({ leftTab: 'controls' }))
         case 'F4': return
         case '[': return run(() => layerToCTI('in', false))
         case ']': return run(() => layerToCTI('out', false))
         case '?': return run(() => setDialog('shortcuts'))
-        case 'Escape': return run(() => { s.select(null); useUIStore.getState().setReveal(null) })
+        case 'Escape': return run(() => { if (playbackEngine.ramBuilding) { playbackEngine.cancelRamPreview(); return } s.select(null); useUIStore.getState().setReveal(null) })
       }
       switch (lower) {
         case 'v': return run(() => setTool('select'))
@@ -233,7 +237,8 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         case 'a': return run(() => reveal('anchor', e.shiftKey))
         case 'u': return run(() => reveal('animated', false))
         case 'm': return run(() => s.mutate(d => { d.markers.push({ id: `mk_${Date.now()}`, time: playbackEngine.currentTime, label: 'Marker', color: '#a9cbc7' }) }))
-        case '.': case '0': if (e.code === 'Numpad0') return run(() => playbackEngine.toggle()); return
+        case '0': return run(() => { if (playbackEngine.ramBuilding) playbackEngine.cancelRamPreview(); else void playbackEngine.ramPreview() })
+        case '.': return
         case '=': case '+': return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 1 })))
         case '-': return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: -1 })))
       }
@@ -267,9 +272,13 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Undo', sc: 'Ctrl+Z', action: undo, disabled: !canUndo },
         { label: 'Redo', sc: 'Ctrl+Shift+Z', action: redo, disabled: !canRedo },
         { sep: true },
-        { label: 'Duplicate', sc: 'Ctrl+D', action: duplicateSelected, disabled: !hasSel },
+        { label: 'Copy', sc: 'Ctrl+C', action: () => { const m = copySelection(); if (m) useEditorStore.getState().toast({ kind: 'info', title: m }) }, disabled: !hasSel },
+        { label: 'Paste', sc: 'Ctrl+V', action: () => { const m = pasteClipboard(); if (m) useEditorStore.getState().toast({ kind: 'info', title: m }) } },
+        { label: 'Select All', sc: 'Ctrl+A', action: selectAllLayers },
+        { sep: true },
+        { label: 'Duplicate', sc: 'Ctrl+D', action: duplicateSelectedLayers, disabled: !hasSel },
         { label: 'Split Layer', sc: 'Ctrl+Shift+D', action: splitSelected, disabled: !hasSel },
-        { label: 'Clear', sc: 'Delete', action: () => { if (!deleteSelectedKeyframe()) deleteSelected() }, disabled: !hasSel },
+        { label: 'Clear', sc: 'Delete', action: () => { if (!deleteSelectedKeyframe()) deleteSelectedLayers() }, disabled: !hasSel },
         { sep: true },
         { label: 'Deselect All', sc: 'Esc', action: () => useEditorStore.getState().select(null) },
         { label: 'Keyboard Shortcuts', sc: '?', action: () => setDialog('shortcuts') },
@@ -286,6 +295,11 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Save Frame As ▸ PNG…', sc: 'Ctrl+Alt+S', action: saveFrameAs },
         { sep: true },
         { label: 'Preview ▸ Play Current Preview', sc: 'Space', action: () => playbackEngine.toggle() },
+        { label: 'Preview ▸ RAM Preview', sc: '0', action: () => void playbackEngine.ramPreview() },
+        { label: 'Purge ▸ Image Cache Memory', action: () => playbackEngine.clearCache() },
+        { sep: true },
+        { label: 'Enable Motion Blur', checked: doc.composition.motionBlur !== false, action: () => useEditorStore.getState().mutate(d => { d.composition.motionBlur = d.composition.motionBlur === false }) },
+        { label: 'Close Pre-comp (go up)', disabled: !(doc.compStack?.length), action: closeComp },
       ],
     },
     {
@@ -298,6 +312,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Camera…', action: () => newLayer('camera') },
         { label: 'Adjustment Layer', sc: 'Ctrl+Alt+Y', action: () => newLayer('adjustment') },
         { sep: true },
+        { label: 'Pre-compose…', sc: 'Ctrl+Shift+C', disabled: !hasSel, action: () => { precomposeSelected() } },
+        { label: 'Open Pre-comp', disabled: sel?.kind !== 'precomp', action: () => { if (sel?.kind === 'precomp') import('./aeActions').then(m => m.openComp(sel.precompId)) } },
+        { sep: true },
+        { label: 'Motion Blur', checked: !!sel?.motionBlur, disabled: !hasSel || sel?.kind === 'audio', action: () => { for (const c of selectedClips()) patchClip(c.id, x => { x.motionBlur = !sel?.motionBlur }) } },
         { label: '3D Layer', checked: !!sel?.threeD, disabled: !hasSel || sel?.kind === 'audio', action: () => sel && patchClip(sel.id, c => { c.threeD = !c.threeD }) },
         { label: 'Hide (Video switch)', checked: !!sel?.hidden, disabled: !hasSel, action: () => sel && patchClip(sel.id, c => { c.hidden = !c.hidden }) },
         { label: 'Lock', checked: !!sel?.locked, disabled: !hasSel, action: () => sel && patchClip(sel.id, c => { c.locked = !c.locked }) },
@@ -334,6 +352,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { sep: true },
         { label: 'Previous Keyframe', sc: 'J', action: () => jumpKeyframe(-1) },
         { label: 'Next Keyframe', sc: 'K', action: () => jumpKeyframe(1) },
+        { label: 'Add Expression ▸ wiggle(3, 25) on Position', disabled: !hasSel, action: () => { for (const c of selectedClips()) patchClip(c.id, x => { x.expressions = { ...(x.expressions ?? {}), position: 'wiggle(3, 25)' } }); if (sel) useUIStore.getState().setReveal({ props: 'animated', clipIds: selectedClips().map(c => c.id) }) } },
+        { label: 'Copy Keyframes', sc: 'Ctrl+C', action: () => { const m = copySelection(); if (m) useEditorStore.getState().toast({ kind: 'info', title: m }) } },
+        { label: 'Paste Keyframes at CTI', sc: 'Ctrl+V', action: () => { const m = pasteClipboard(); if (m) useEditorStore.getState().toast({ kind: 'info', title: m }) } },
+        { sep: true },
         { label: 'Reveal Animated Properties', sc: 'U', action: () => useUIStore.getState().setReveal(sel ? { props: 'animated', clipIds: [sel.id] } : null) },
         { sep: true },
         { label: 'Track Motion', action: () => setDocks({ rightTab: 'tracker', rightCollapsed: false }) },
@@ -454,7 +476,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         {/* center: composition viewer */}
         <Panel
           className="flex-1" active={focus === 'viewer'} onFocus={() => setFocus('viewer')}
-          tabs={[{ id: 'comp', title: `Composition ${doc.name}` }]} tab="comp" onTab={() => { }}
+          tabs={[{ id: 'comp', title: `Composition ${doc.compName ?? doc.name}` }]} tab="comp" onTab={() => { }}
         >
           <PreviewMonitor ae />
         </Panel>
@@ -489,7 +511,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
       <div className="shrink-0 px-[3px] pb-[3px] min-h-0" style={{ height: docks.timelineH }}>
         <Panel
           className="h-full" active={focus === 'timeline'} onFocus={() => setFocus('timeline')}
-          tabs={[{ id: 'tl', title: doc.name }]} tab="tl" onTab={() => { }} tabIcon
+          tabs={[{ id: 'tl', title: doc.compName ?? doc.name }]} tab="tl" onTab={() => { }} tabIcon
         >
           <AETimeline />
         </Panel>

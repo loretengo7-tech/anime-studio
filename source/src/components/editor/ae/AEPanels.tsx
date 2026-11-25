@@ -16,7 +16,7 @@ import { EFFECT_DEFS } from '@/lib/engine/effects'
 import { getPluginEffectDefs } from '@/lib/engine/plugins'
 import { evalProperty } from '@/lib/engine/keyframes'
 import { timecode } from '../ui-bits'
-import { addAssetLayer, importFiles, pickAndImport, writeProp } from './aeActions'
+import { addAssetLayer, importFiles, pickAndImport, writeProp, openComp } from './aeActions'
 import {
   Film, Music, ImageIcon, Trash2, Search, ChevronRight, ChevronDown, Zap, FolderPlus, Clapperboard,
   Play, Pause, SkipBack, SkipForward, ChevronFirst, ChevronLast, Repeat, Volume2, VolumeX, Upload,
@@ -127,11 +127,29 @@ export function ProjectPanel() {
         {/* the composition itself, like AE's comp item */}
         <div className="flex items-center gap-2 px-2 h-[22px] text-zinc-200 hover:bg-[#2c2c2c]" onDoubleClick={() => setDialog('comp')} title="Double-click: Composition Settings">
           <Clapperboard size={13} className="text-zinc-400 shrink-0" />
-          <span className="flex-1 truncate">{doc.name}</span>
+          <span className="flex-1 truncate">{doc.compName ?? doc.name}{doc.compId && doc.compId !== 'main' ? ' (open)' : ''}</span>
           <span className="w-4 h-3 rounded-[1px]" style={{ background: LABEL_COLORS[15].color }} />
           <span className="w-11 text-zinc-500 text-[11px]">Comp</span>
           <span className="w-16 text-right text-zinc-400 as-mono text-[11px]">{timecode(doc.composition.duration, doc.composition.fps)}</span>
         </div>
+        {(doc.precomps ?? []).filter(p => p.id !== 'main').map(pc => (
+          <div key={pc.id} draggable
+            onDragStart={e => { e.dataTransfer.setData('application/x-as-comp', pc.id); e.dataTransfer.effectAllowed = 'copy' }}
+            className="flex items-center gap-2 px-2 h-[22px] text-zinc-200 hover:bg-[#2c2c2c] cursor-default"
+            onDoubleClick={() => openComp(pc.id)} title="Double-click to open · drag to the timeline to nest">
+            <Clapperboard size={13} className="text-zinc-400 shrink-0" />
+            <span className="flex-1 truncate">{pc.name}</span>
+            <span className="w-4 h-3 rounded-[1px]" style={{ background: LABEL_COLORS[15].color }} />
+            <span className="w-11 text-zinc-500 text-[11px]">Comp</span>
+            <span className="w-16 text-right text-zinc-400 as-mono text-[11px]">{timecode(pc.composition.duration, pc.composition.fps)}</span>
+          </div>
+        ))}
+        {doc.compId && doc.compId !== 'main' && (
+          <div className="flex items-center gap-2 px-2 h-[22px] text-zinc-400 hover:bg-[#2c2c2c] cursor-default" onDoubleClick={() => openComp('main')}>
+            <Clapperboard size={13} className="shrink-0" />
+            <span className="flex-1 truncate">{doc.precomps?.find(p => p.id === 'main')?.name ?? 'Main'} (main)</span>
+          </div>
+        )}
         {list.map(a => (
           <div
             key={a.id}
@@ -306,6 +324,7 @@ export function PreviewPanel() {
         <button className={btn} data-on={loop ? '1' : '0'} title="Loop" onClick={() => { playbackEngine.setLoop(!loop); setLoop(!loop) }}><Repeat size={14} /></button>
         <button className={btn} data-on={muted ? '1' : '0'} title="Mute Audio" onClick={() => setMuted(playbackEngine.toggleMute())}>{muted ? <VolumeX size={14} /> : <Volume2 size={14} />}</button>
       </div>
+      <RamPreviewBox />
       <div className="grid grid-cols-[80px_1fr] gap-y-1.5 items-center mt-2 text-zinc-400">
         <span>Frame Rate</span>
         <select className="ae-vb-select" value={rate} onChange={e => { const r = parseFloat(e.target.value); playbackEngine.setRate(r); setRate(r) }}>
@@ -319,6 +338,38 @@ export function PreviewPanel() {
         </select>
         <span>Effects</span>
         <label className="flex items-center gap-1.5 text-zinc-300"><input type="checkbox" defaultChecked={!playbackEngine.compareMode} onChange={() => playbackEngine.toggleCompare()} /> Render effects</label>
+      </div>
+    </div>
+  )
+}
+
+function RamPreviewBox() {
+  const [prog, setProg] = useState<number | null>(null)
+  const [, setT] = useState(0)
+  useEffect(() => {
+    const h = () => setT(t => (t + 1) % 1e6)
+    window.addEventListener('as-cache', h)
+    return () => window.removeEventListener('as-cache', h)
+  }, [])
+  const st = playbackEngine.cacheStats
+  const run = async () => {
+    if (playbackEngine.ramBuilding) { playbackEngine.cancelRamPreview(); return }
+    setProg(0)
+    await playbackEngine.ramPreview(p => setProg(p))
+    setProg(null)
+  }
+  return (
+    <div className="mt-2 p-2 rounded-[3px] bg-[#1d1d1d] border border-[#333]">
+      <div className="flex items-center gap-2">
+        <button className="gbtn gbtn-accent !px-3 !py-1 text-[11px] flex-1" onClick={() => void run()} title="Render the work area into RAM, then play it in real time (0)">
+          {prog !== null ? `Rendering… ${Math.round(prog * 100)}% (Esc cancels)` : 'RAM Preview (0)'}
+        </button>
+        <button className="gbtn !px-2 !py-1 text-[11px]" title="Purge cache" onClick={() => playbackEngine.clearCache()}>Purge</button>
+      </div>
+      {prog !== null && <div className="h-[3px] mt-1.5 bg-[#333]"><div className="h-full bg-[#3ccf55]" style={{ width: `${prog * 100}%` }} /></div>}
+      <div className="mt-1 text-[10px] text-zinc-500 as-mono">
+        <span className="text-[#3ccf55]">{st.frames}</span> frames cached · {st.mb}/{st.budgetMb} MB
+        <div className="text-zinc-600 font-sans mt-0.5">Frames you play once replay from RAM. Lower Resolution = more frames fit.</div>
       </div>
     </div>
   )
@@ -394,6 +445,7 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
   const [fps, setFps] = useState(doc.composition.fps)
   const [dur, setDur] = useState(doc.composition.duration)
   const [bg, setBg] = useState(doc.composition.background)
+  const [shutter, setShutter] = useState(doc.composition.shutterAngle ?? 180)
   const [lock, setLock] = useState(true)
   const ar = doc.composition.width / doc.composition.height
   const preset = PRESETS.find(p => p.w === w && p.h === h && p.fps === fps)?.name ?? 'Custom'
@@ -405,6 +457,7 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
       d.composition.fps = Math.max(1, Math.min(120, fps))
       d.composition.duration = Math.max(0.5, Math.min(3600, dur))
       d.composition.background = bg
+      d.composition.shutterAngle = Math.max(0, Math.min(720, shutter))
     })
     onClose()
   }
@@ -432,6 +485,8 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
         </select>
         <span className={lbl}>Duration:</span>
         <div className="flex items-center gap-2"><input className="ginput w-24" type="number" step={0.5} value={dur} onChange={e => setDur(+e.target.value)} /> s <span className="ae-timecode text-[11px]">{timecode(dur, fps)}</span></div>
+        <span className={lbl}>Shutter Angle:</span>
+        <div className="flex items-center gap-2"><input className="ginput w-20" type="number" min={0} max={720} value={shutter} onChange={e => setShutter(+e.target.value)} /> ° <span className="text-zinc-500 text-[11px]">motion blur length (180 = film look)</span></div>
         <span className={lbl}>Background Color:</span>
         <div className="flex items-center gap-2"><input type="color" value={bg} onChange={e => setBg(e.target.value)} className="w-8 h-6 bg-transparent" /><span className="as-mono text-zinc-500">{bg}</span></div>
       </div>
@@ -457,7 +512,12 @@ export const SHORTCUTS: [string, string][] = [
   ['[ / ]', 'Move layer in / out point to CTI'],
   ['Alt + [ / ]', 'Trim layer in / out point to CTI'],
   ['Ctrl + [ / ]', 'Send backward / bring forward'],
-  ['Ctrl+D', 'Duplicate layer'],
+  ['Ctrl+D', 'Duplicate layer(s)'],
+  ['Ctrl+C / Ctrl+V', 'Copy / paste keyframes (at the CTI) or layers'],
+  ['Ctrl+A · Ctrl/Shift+click', 'Select all layers · add to selection'],
+  ['Ctrl+Shift+C', 'Pre-compose selected layers'],
+  ['0 / Numpad 0', 'RAM Preview (render work area to memory, play real time)'],
+  ['Alt+click stopwatch', 'Add / remove expression'],
   ['Ctrl+Shift+D', 'Split layer'],
   ['Ctrl+Y', 'New solid'],
   ['Ctrl+Alt+Shift+T / Y', 'New text layer / null object'],
