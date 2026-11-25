@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+# ANIME STUDIO — publishes site-pages.zip (built with the /anime-studio/ base
+# path) to GitHub Pages:
+#   https://loretengo7-tech.github.io/anime-studio/
+#
+# Auto-enables Pages (enablement: true) — no manual Settings needed.
+# Every push to main re-deploys automatically. Can also be run manually:
+# Actions → Deploy to GitHub Pages → Run workflow.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check files
+        run: |
+          echo "Repo root contains:"
+          ls -la
+          if [ ! -f site-pages.zip ]; then
+            echo "::error::FALTA site-pages.zip en la raíz del repo — subilo con Add file > Upload files"
+            exit 1
+          fi
+
+      - name: Unpack site
+        run: |
+          mkdir -p site
+          unzip -q site-pages.zip -d site
+          test -f site/index.html || { echo "::error::site-pages.zip no contiene index.html — seguramente subiste otro zip (ej. el kit completo) en vez de site-pages.zip"; exit 1; }
+
+      - name: Configure Pages (auto-enable)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
