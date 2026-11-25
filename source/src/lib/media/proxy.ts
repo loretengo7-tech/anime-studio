@@ -12,7 +12,7 @@
  *  - Uses the browser's recorder codec (Safari → MP4 H.264, Chrome → WebM).
  */
 import type { AssetMeta } from '../engine/types'
-import { mediaManager } from './mediaManager'
+import { mediaManager, desktopBridge } from './mediaManager'
 
 const DB_NAME = 'anime-studio-media'
 const STORE = 'files'
@@ -95,6 +95,17 @@ export async function generateLocalProxy(
   onProgress: (p: ProxyProgress) => void
 ): Promise<{ sizeBytes: number; mimeType: string }> {
   if (asset.kind !== 'video') throw new Error('Proxies are only for video assets')
+  // Desktop app: native ffmpeg makes an all-intra-friendly 960p H.264 proxy many times faster than realtime
+  const desk = desktopBridge()
+  if (desk) {
+    onProgress({ progress: 0.05, message: 'ffmpeg…' } as ProxyProgress)
+    const src = await (await fetch(asset.url)).blob()
+    const out = await desk.convert(src, 'proxy', asset.name)
+    await persistProxy(asset.id, out, 'video/mp4')
+    mediaManager.setProxyUrl(asset.id, URL.createObjectURL(out))
+    onProgress({ progress: 1, message: 'done' } as ProxyProgress)
+    return { sizeBytes: out.size, mimeType: 'video/mp4' }
+  }
   const mime = pickProxyMime()
   if (!mime) throw new Error('MediaRecorder is not available in this browser')
 

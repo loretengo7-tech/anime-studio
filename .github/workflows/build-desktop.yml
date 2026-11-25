@@ -1,0 +1,88 @@
+name: Build desktop app (.exe)
+
+# Builds AnimeStudio Desktop for Windows from source/ and publishes the
+# installer + portable .exe as a GitHub Release (tag desktop-v<version>).
+# Runs on every push that touches source/, or manually:
+# Actions → "Build desktop app (.exe)" → Run workflow.
+
+on:
+  push:
+    branches: [main]
+    paths: ['source/**', '.github/workflows/build-desktop.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Install
+        working-directory: source
+        run: npm ci --no-audit --no-fund
+      - name: Static build (root base path for the desktop shell)
+        working-directory: source
+        run: bash scripts/build-static.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-app
+          path: source/dist-static
+          retention-days: 3
+
+  windows:
+    needs: web
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-app
+          path: source/desktop/app
+      - name: Install desktop deps (Electron + ffmpeg for Windows)
+        working-directory: source/desktop
+        run: npm install --no-audit --no-fund
+      - name: Package (NSIS installer + portable exe)
+        working-directory: source/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --win --x64 --publish never
+      - name: Version
+        id: v
+        shell: bash
+        run: echo "version=$(node -p "require('./source/desktop/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AnimeStudio-windows
+          path: |
+            source/desktop/dist/*.exe
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ steps.v.outputs.version }}
+          name: AnimeStudio Desktop ${{ steps.v.outputs.version }} (Windows)
+          make_latest: true
+          body: |
+            **AnimeStudio Desktop para Windows** — el mismo editor, compilado como app.
+
+            - `AnimeStudio-${{ steps.v.outputs.version }}-Setup.exe` → instalador (recomendado)
+            - `AnimeStudio-${{ steps.v.outputs.version }}-portable.exe` → sin instalar, doble clic y listo
+
+            Diferencias con la web: GPU forzada, sin límites de pestaña, más RAM para el RAM Preview,
+            ffmpeg incluido (abre MKV/HEVC/AVI/ProRes y crea proxies rápidos automáticamente).
+
+            Windows puede mostrar "SmartScreen" porque el .exe no está firmado: *Más información → Ejecutar de todas formas*.
+          files: source/desktop/dist/*.exe

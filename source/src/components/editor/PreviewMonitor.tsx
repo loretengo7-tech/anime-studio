@@ -497,6 +497,12 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
   const [rubber, setRubber] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const aeOverlayRef = useRef<HTMLCanvasElement>(null)
   const cacheRef = useRef<HTMLCanvasElement>(null)
+  const [ramProg, setRamProg] = useState<number | null>(null)
+  useEffect(() => {
+    const h = (e: Event) => { const v = (e as CustomEvent<number>).detail; setRamProg(v < 0 ? null : v) }
+    window.addEventListener('as-ramprogress', h)
+    return () => window.removeEventListener('as-ramprogress', h)
+  }, [])
   useEffect(() => {
     playbackEngine.attachCacheOverlay(cacheRef.current)
     return () => playbackEngine.attachCacheOverlay(null)
@@ -843,6 +849,22 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
   }
 
   const onMainPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const cut = useUIStore.getState().cutoutPick
+    if (cut && doc) {
+      // AI cut-out pick: map the click into the layer's source frame (0..1, y down)
+      const c = doc.clips.find(k => k.id === cut)
+      const { cx, cy, w, h } = cssPt(e)
+      let x = cx / w, y = cy / h
+      const sz = c ? sizeOf(c) : null
+      if (c && sz) {
+        const poly = layerCornersNDC(doc, c, playbackEngine.currentTime, doc.composition, sz[0], sz[1]).map(p => ndcToCss(p, w, h))
+        const xs = poly.map(p => p[0]), ys = poly.map(p => p[1])
+        const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys)
+        x = (cx - x0) / Math.max(1, x1 - x0); y = (cy - y0) / Math.max(1, y1 - y0)
+      }
+      window.dispatchEvent(new CustomEvent('as-cutout-pick', { detail: { x, y, clipId: cut } }))
+      return
+    }
     if (!trackerPick && onNullDragDown(e)) return
     if (!trackerPick && onAEDown(e)) return
     onCanvasPointer(e)
@@ -918,6 +940,14 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
           AI PREVIEW — approve or discard below
         </div>
       )}
+      {ramProg !== null && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 px-3 py-1.5 rounded bg-black/80 border border-[#3ccf55]/60 text-[11px] text-[#3ccf55] as-mono flex items-center gap-2"
+          onClick={() => playbackEngine.cancelRamPreview()}>
+          RAM Preview {Math.round(ramProg * 100)}%
+          <span className="w-24 h-1 bg-white/10"><span className="block h-full bg-[#3ccf55]" style={{ width: `${ramProg * 100}%` }} /></span>
+          <span className="text-zinc-500">tocar = cancelar</span>
+        </div>
+      )}
       {heavyActive >= 2 && (
         <div className="absolute top-2 left-2 glass-strong text-amber-200 text-[10px] px-2 py-1 rounded z-10 border border-amber-500/40">
           {heavyActive} heavy FX active — lower Resolution if it lags
@@ -985,6 +1015,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
           <option value="half">Half</option>
           <option value="quarter">Quarter</option>
         </select>
+        <button className="ae-vb-btn !text-[#3ccf55]" title="RAM Preview (0): render to memory, then play in real time" onClick={() => { if (playbackEngine.ramBuilding) playbackEngine.cancelRamPreview(); else void playbackEngine.ramPreview() }}><Zap size={13} /> RAM</button>
         <span className="w-px h-4 bg-[#3a3a3a] mx-1" />
         <button className="ae-vb-btn" data-on={guides.checker ? '1' : '0'} title="Toggle Transparency Grid" onClick={() => setGuides({ checker: !guides.checker })}><Grid3x3 size={13} className="opacity-60" /></button>
         <button className="ae-vb-btn" data-on={guides.grid ? '1' : '0'} title="Rule-of-thirds grid" onClick={() => setGuides({ grid: !guides.grid })}><Grid3x3 size={13} /></button>

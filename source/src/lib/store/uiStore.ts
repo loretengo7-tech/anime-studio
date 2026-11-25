@@ -37,6 +37,9 @@ interface UIStore {
   /** Cursor position over the viewer in comp pixels (Info panel). */
   cursor: { x: number; y: number } | null
   setCursor: (c: { x: number; y: number } | null) => void
+  /** AI cut-out: waiting for the user to click the character of this clip */
+  cutoutPick: string | null
+  setCutoutPick: (id: string | null) => void
 }
 
 const KEY = 'anime-studio:ae-ui'
@@ -73,5 +76,7 @@ export const useUIStore = create<UIStore>((set, get) => {
     setDialog: dialog => set({ dialog }),
     cursor: null,
     setCursor: cursor => set({ cursor }),
+    cutoutPick: null,
+    setCutoutPick: cutoutPick => set({ cutoutPick }),
   }
 })

@@ -31,7 +31,9 @@ class PlaybackEngine {
   doc: ProjectDoc | null = null
   state: PlaybackState = { playing: false, time: 0, rate: 1, loop: false, inPoint: null, outPoint: null }
   muted = false
-  previewQuality: 'quarter' | 'half' | 'full' = 'half'
+  // phones/tablets start at Quarter: the GPU and decoder budget there is far smaller
+  previewQuality: 'quarter' | 'half' | 'full' =
+    typeof navigator !== 'undefined' && (/iP(hone|od)|Android/i.test(navigator.userAgent) || (typeof window !== 'undefined' && window.innerWidth < 820)) ? 'quarter' : 'half'
   compareMode = false
   private listeners = new Set<Listener>()
   private rafId = 0
@@ -267,7 +269,7 @@ class PlaybackEngine {
 
   // ================= RAM preview (frame cache) =================
   /** comp frame index → rendered frame at preview resolution */
-  private cache = new Map<number, ImageBitmap>()
+  private cache = new Map<number, HTMLCanvasElement>()
   private cacheDoc: ProjectDoc | null = null
   private cacheSig = ''
   private cacheBytes = 0
@@ -283,6 +285,8 @@ class PlaybackEngine {
     const nav = (typeof navigator !== 'undefined' ? navigator : {}) as Navigator & { deviceMemory?: number }
     const ios = typeof navigator !== 'undefined' && /iP(hone|ad|od)/.test(navigator.userAgent)
     if (ios) return 320 * 1024 * 1024
+    // desktop app (Electron): no tab memory cap → let the RAM preview hold minutes of frames
+    if (typeof window !== 'undefined' && (window as unknown as { animeStudioDesktop?: unknown }).animeStudioDesktop) return 3072 * 1024 * 1024
     const gb = nav.deviceMemory ?? 4
     return Math.min(2048, Math.max(256, gb * 160)) * 1024 * 1024
   }
@@ -305,7 +309,7 @@ class PlaybackEngine {
     this.showingCache = false
     if (this.overlay) this.overlay.style.visibility = 'hidden'
   }
-  private drawCached(bmp: ImageBitmap) {
+  private drawCached(bmp: HTMLCanvasElement) {
     const ov = this.overlay
     if (!ov) return
     if (ov.width !== bmp.width || ov.height !== bmp.height) { ov.width = bmp.width; ov.height = bmp.height }
@@ -324,7 +328,6 @@ class PlaybackEngine {
   }
 
   clearCache() {
-    for (const b of this.cache.values()) { try { b.close() } catch { /* ok */ } }
     this.cache.clear()
     this.pending.clear()
     this.cacheBytes = 0
@@ -342,21 +345,28 @@ class PlaybackEngine {
     return true
   }
 
+  /** Phones keep smaller cache frames: more seconds fit in Safari's memory limit. */
+  private get cacheMaxDim(): number {
+    const mobile = typeof navigator !== 'undefined' && (/iP(hone|ad|od)|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.userAgent)))
+    return mobile ? 640 : 4096
+  }
+
   private captureFrame(frame: number, canvas: HTMLCanvasElement) {
     if (this.cache.has(frame) || this.pending.has(frame)) return
-    const bytes = canvas.width * canvas.height * 4
+    const k = Math.min(1, this.cacheMaxDim / Math.max(canvas.width, canvas.height))
+    const w = Math.max(2, Math.round(canvas.width * k)), h = Math.max(2, Math.round(canvas.height * k))
+    const bytes = w * h * 4
     if (this.cacheBytes + bytes > this.cacheBudget) return
-    if (typeof createImageBitmap !== 'function') return
-    const doc = this.cacheDoc
-    this.pending.add(frame)
-    // the WebGL drawing buffer is snapshotted synchronously at call time
-    createImageBitmap(canvas).then(bmp => {
-      if (doc !== this.cacheDoc || !this.pending.has(frame)) { bmp.close(); return }
-      this.pending.delete(frame)
-      this.cache.set(frame, bmp)
-      this.cacheBytes += bytes
-      this.notifyCache()
-    }).catch(() => this.pending.delete(frame))
+    // Synchronous copy right after render: works on every engine. (createImageBitmap
+    // of a WebGL canvas is unreliable on iOS Safari — the cached frames came out blank.)
+    const c = document.createElement('canvas')
+    c.width = w; c.height = h
+    const ctx = c.getContext('2d', { alpha: false })
+    if (!ctx) return
+    try { ctx.drawImage(canvas, 0, 0, w, h) } catch { return }
+    this.cache.set(frame, c)
+    this.cacheBytes += bytes
+    this.notifyCache()
   }
 
   private notifyCache(force = false) {
@@ -422,6 +432,7 @@ class PlaybackEngine {
         this.captureFrame(f, canvas)
         this.emit()
         onProgress?.((f - f0 + 1) / (f1 - f0))
+        window.dispatchEvent(new CustomEvent('as-ramprogress', { detail: (f - f0 + 1) / (f1 - f0) }))
         if ((f - f0) % 4 === 0) await new Promise(r => setTimeout(r, 0))
       }
       // wait for the last bitmaps
@@ -430,6 +441,7 @@ class PlaybackEngine {
       this.suspended = false
       this.lastFrameTime = 0
     }
+    window.dispatchEvent(new CustomEvent('as-ramprogress', { detail: -1 }))
     if (!this.ramBuilding) return // cancelled
     this.ramBuilding = false
     this.notifyCache(true)

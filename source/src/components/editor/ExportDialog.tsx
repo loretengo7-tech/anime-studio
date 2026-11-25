@@ -113,7 +113,7 @@ export function ExportDialog() {
       </Row>
       <Row label="FPS">
         <select className="flex-1 text-xs ginput rounded px-2 py-1.5" value={settings.fps} onChange={e => setSettings(s => ({ ...s, fps: parseInt(e.target.value) }))}>
-          {[24, 30, 50, 60].map(f => <option key={f} value={f}>{f}</option>)}
+          {[24, 25, 30, 48, 50, 60, 90, 120, 144, 240].map(f => <option key={f} value={f}>{f}{f > 60 ? ' (high frame rate)' : ''}</option>)}
         </select>
       </Row>
       <Row label="Quality">

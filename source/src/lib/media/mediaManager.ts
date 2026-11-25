@@ -345,10 +345,48 @@ export interface ImportResult {
   file: File
 }
 
+/** MIME is often empty for .mkv/.mov on Windows/Android — fall back to the extension. */
+export function mediaKindOf(file: File): 'video' | 'audio' | 'image' {
+  if (file.type.startsWith('video')) return 'video'
+  if (file.type.startsWith('audio')) return 'audio'
+  if (file.type.startsWith('image')) return 'image'
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (['mkv', 'mp4', 'm4v', 'mov', 'webm', 'avi', 'ts', 'mts', 'm2ts', 'flv', 'wmv', 'ogv', '3gp'].includes(ext)) return 'video'
+  if (['mp3', 'wav', 'flac', 'ogg', 'opus', 'm4a', 'aac', 'aif', 'aiff', 'wma'].includes(ext)) return 'audio'
+  return 'image'
+}
+
+/** Real source frame rate (24…240) from presented-frame timestamps. */
+async function measureFps(el: HTMLVideoElement): Promise<number> {
+  const v = el as HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, md: { mediaTime: number }) => void) => number }
+  if (typeof v.requestVideoFrameCallback !== 'function') return 30
+  const times: number[] = []
+  const done = new Promise<void>(res => {
+    const step = (_: number, md: { mediaTime: number }) => {
+      times.push(md.mediaTime)
+      if (times.length < 14) v.requestVideoFrameCallback!(step); else res()
+    }
+    v.requestVideoFrameCallback!(step)
+    setTimeout(res, 2500)
+  })
+  // play at ¼ speed: a 240 fps source then presents ≤60 frames/s, so a 60 Hz screen still sees every frame
+  try { el.muted = true; el.playbackRate = 0.25; await el.play() } catch { return 30 }
+  await done
+  el.pause()
+  const d: number[] = []
+  for (let i = 1; i < times.length; i++) { const x = times[i] - times[i - 1]; if (x > 0.0005 && x < 0.2) d.push(x) }
+  if (d.length < 3) return 30
+  d.sort((a, b) => a - b)
+  const fps = 1 / d[0] // smallest step = one source frame (display may skip frames)
+  const common = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 90, 100, 119.88, 120, 144, 165, 180, 200, 240]
+  return common.reduce((b, c) => Math.abs(c - fps) < Math.abs(b - fps) ? c : b, 30)
+}
+
 export async function probeMediaFile(file: File): Promise<{ kind: 'video' | 'audio' | 'image'; duration: number; width: number; height: number; fps: number }> {
   const url = URL.createObjectURL(file)
+  const kind = mediaKindOf(file)
   try {
-    if (file.type.startsWith('video')) {
+    if (kind === 'video') {
       const el = document.createElement('video')
       el.src = url; el.muted = true; el.playsInline = true; el.preload = 'metadata'
       await new Promise<void>((res, rej) => {
@@ -356,25 +394,12 @@ export async function probeMediaFile(file: File): Promise<{ kind: 'video' | 'aud
         el.onloadedmetadata = () => { clearTimeout(t); res() }
         el.onerror = () => { clearTimeout(t); rej(new Error('decode error')) }
       })
-      // Estimate fps by sampling currentTime deltas (browsers don't expose fps)
+      if (!el.videoWidth) throw new Error('decode error')
       let fps = 30
-      try {
-        await seekTo(el, 0)
-        const times: number[] = []
-        for (let i = 0; i < 4; i++) {
-          const t0 = el.currentTime
-          await new Promise<void>(res => {
-            el.onseeked = () => res()
-            el.currentTime = Math.min(el.duration - 0.01, t0 + 0.1)
-            setTimeout(res, 120)
-          })
-          times.push(el.currentTime)
-        }
-        void times
-      } catch { /* keep default */ }
+      try { fps = await measureFps(el) } catch { /* keep default */ }
       return { kind: 'video', duration: el.duration || 0, width: el.videoWidth, height: el.videoHeight, fps }
     }
-    if (file.type.startsWith('audio')) {
+    if (kind === 'audio') {
       const el = document.createElement('audio')
       el.src = url; el.preload = 'metadata'
       await new Promise<void>((res, rej) => {
@@ -465,7 +490,21 @@ export async function generatePeaks(url: string, buckets = 900): Promise<number[
 
 /** Import a File: probe + thumbnails/peaks + upload to server. Returns AssetMeta. */
 export async function importMediaFile(file: File, uploadFn: (file: File, meta: { kind: string; duration: number; width: number; height: number; fps: number }) => Promise<{ id: string; url: string }>): Promise<AssetMeta> {
-  const probe = await probeMediaFile(file)
+  let probe: Awaited<ReturnType<typeof probeMediaFile>>
+  try {
+    probe = await probeMediaFile(file)
+  } catch (e) {
+    // Codec the browser can't decode (MKV with HEVC/AC3, AVI, ProRes…): the desktop
+    // app converts it with its bundled ffmpeg; the web build explains why.
+    const desk = desktopBridge()
+    if (desk && mediaKindOf(file) !== 'image') {
+      file = await desk.convert(file, 'compat')
+      probe = await probeMediaFile(file)
+    } else {
+      const ext = file.name.split('.').pop()?.toUpperCase()
+      throw new Error(`${ext} uses a codec this browser can't decode (e.g. HEVC/AC3). Open it in the AnimeStudio desktop app (it converts automatically) or convert it to MP4 (H.264/AAC).`)
+    }
+  }
   const { id, url } = await uploadFn(file, probe)
   const meta: AssetMeta = {
     id,
@@ -486,4 +525,27 @@ export async function importMediaFile(file: File, uploadFn: (file: File, meta: {
   }
   mediaManager.registerAsset(meta)
   return meta
+}
+
+// ---------------------------------------------------------------------------
+// Desktop (Electron) bridge — present only in the AnimeStudio desktop app
+// ---------------------------------------------------------------------------
+export interface DesktopBridge {
+  platform: string
+  convert: (file: File | Blob, preset: 'compat' | 'proxy', name?: string) => Promise<File>
+  gpuInfo?: () => Promise<string>
+}
+export function desktopBridge(): DesktopBridge | null {
+  if (typeof window === 'undefined') return null
+  const api = (window as unknown as { animeStudioDesktop?: { platform: string; transcode: (name: string, data: ArrayBuffer, preset: string) => Promise<{ name: string; data: ArrayBuffer }>; gpuInfo?: () => Promise<string> } }).animeStudioDesktop
+  if (!api) return null
+  return {
+    platform: api.platform,
+    gpuInfo: api.gpuInfo,
+    convert: async (file, preset, name) => {
+      const nm = name ?? (file as File).name ?? 'media'
+      const out = await api.transcode(nm, await file.arrayBuffer(), preset)
+      return new File([out.data], out.name, { type: 'video/mp4' })
+    },
+  }
 }

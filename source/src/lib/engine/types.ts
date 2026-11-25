@@ -66,6 +66,8 @@ export interface EffectDef {
   params: EffectParamDef[]
   /** Cost tier — heavy effects warn on low-power devices. */
   heavy?: boolean
+  /** Effect pack name (groups the effect in Effects & Presets). */
+  pack?: string
   /** When defined, the effect comes from an installed plugin. */
   pluginId?: string
   pluginName?: string

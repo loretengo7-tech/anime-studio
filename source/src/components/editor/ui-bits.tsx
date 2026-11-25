@@ -190,7 +190,7 @@ export function timecode(t: number, fps: number): string {
   const f = Math.floor((abs - s) * fps)
   const m = Math.floor(s / 60)
   const ss = s % 60
-  return `${sign}${m.toString().padStart(2, '0')}:${ss.toString().padStart(2, '0')}.${f.toString().padStart(2, '0')}`
+  return `${sign}${m.toString().padStart(2, '0')}:${ss.toString().padStart(2, '0')}.${f.toString().padStart(fps > 99 ? 3 : 2, '0')}`
 }
 
 /** Renders a waveform into a canvas (peaks normalized 0..1). */

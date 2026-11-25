@@ -152,7 +152,7 @@ export function AssetsPanel() {
 
   return (
     <div className="p-3 pb-10">
-      <input ref={fileRef} type="file" multiple accept="video/*,audio/*,image/*" className="hidden" onChange={e => importFiles(e.target.files)} />
+      <input ref={fileRef} type="file" multiple accept="video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav" className="hidden" onChange={e => importFiles(e.target.files)} />
       <button
         className="w-full flex items-center justify-center gap-2 py-3 rounded-2xl border-2 border-dashed border-white/15 text-zinc-300 text-sm mb-3 gbtn"
         onClick={() => fileRef.current?.click()}
@@ -610,7 +610,7 @@ export function CompPanel() {
       </Row>
       <Row label="FPS">
         <select className="ginput flex-1" value={doc.composition.fps} onChange={e => mutate(d => { d.composition.fps = parseInt(e.target.value) })}>
-          {[24, 25, 30, 50, 60].map(f => <option key={f} value={f}>{f}</option>)}
+          {[24, 25, 30, 50, 60, 120, 240].map(f => <option key={f} value={f}>{f}</option>)}
         </select>
       </Row>
       <Row label="Duration">

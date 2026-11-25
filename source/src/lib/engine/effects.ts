@@ -6,6 +6,7 @@
  * Params are clamped, keyframable and exposed to the AI tool system.
  */
 import type { EffectDef } from './types'
+import { FX_PACK_DEFS } from './fxpack'
 
 export const EFFECT_DEFS: EffectDef[] = [
   // ------------------------------------------------ New (CapCut-style) — mirror / tile / key / tilt-shift / beat zoom
@@ -579,6 +580,7 @@ export const EFFECT_DEFS: EffectDef[] = [
       { key: 'fps', label: 'Frame Rate', min: 1, max: 60, step: 1, default: 12, uniform: 'posterizeFps' },
     ],
   },
+  ...FX_PACK_DEFS,
 ]
 
 export const EFFECT_MAP: Record<string, EffectDef> = Object.fromEntries(EFFECT_DEFS.map(e => [e.type, e]))

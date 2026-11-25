@@ -27,6 +27,8 @@ import { EnhancePanel } from './EnhancePanel'
 import { TrackerPanel } from './TrackerPanel'
 import { SettingsPanel } from './SettingsPanel'
 import { MobileWorkspace } from './MobileWorkspace'
+import { BeatSyncPanel } from './BeatSyncPanel'
+import { CutoutPanel } from './CutoutPanel'
 import { AEWorkspace } from './ae/AEWorkspace'
 import {
   AssetsPanel, EffectsPanel, TextPanel, ColorPanel, CompPanel, ProjectsPanel, StatusPanel, PluginsPanel,
@@ -276,6 +278,8 @@ export function Workspace() {
     settings: { title: 'Settings', el: <SettingsPanel /> },
     comp: { title: 'Composition', el: <CompPanel /> },
     export: { title: 'Export & Render', el: <ExportDialog /> },
+    beatsync: { title: 'Beat Sync', el: <BeatSyncPanel /> },
+    cutout: { title: 'AI Cut-out', el: <CutoutPanel /> },
   }
 
   // which panels dock on the right (desktop); everything else opens as a sheet

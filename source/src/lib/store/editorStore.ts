@@ -36,7 +36,7 @@ interface EditorStore {
   selectedKeyframeId: string | null
   /** Extra selected keyframes (Shift+click) — copy/paste/ease apply to all. */
   selectedKeyframeIds: string[]
-  activePanel: 'assets' | 'effects' | 'plugins' | 'inspector' | 'graph' | 'speed' | 'audio' | 'text' | 'ai' | 'projects' | 'status' | 'enhance' | 'color' | 'comp' | 'tracker' | 'export' | 'settings' | null
+  activePanel: 'assets' | 'effects' | 'plugins' | 'inspector' | 'graph' | 'speed' | 'audio' | 'text' | 'ai' | 'projects' | 'status' | 'enhance' | 'color' | 'comp' | 'tracker' | 'export' | 'settings' | 'beatsync' | 'cutout' | null
   preview: PreviewState | null
   aiBusy: boolean
   saveState: 'saved' | 'dirty' | 'saving'

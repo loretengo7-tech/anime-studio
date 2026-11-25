@@ -198,6 +198,14 @@ export function AETimeline() {
     if (avail > 100) setPps(Math.max(4, Math.min(400, avail / Math.max(1, duration))))
   }, [doc.id, LW, duration])
 
+  // AE: = / - zoom the time ruler, F4 toggles Switches/Modes
+  useEffect(() => {
+    const z = (e: Event) => { const d = (e as CustomEvent<number>).detail; setPps(p => Math.max(2, Math.min(800, d > 0 ? p * 1.4 : p / 1.4))) }
+    const m = () => setShowModes(v => !v)
+    window.addEventListener('as-tl-zoom', z); window.addEventListener('as-toggle-modes', m)
+    return () => { window.removeEventListener('as-tl-zoom', z); window.removeEventListener('as-toggle-modes', m) }
+  }, [])
+
   // work area changes come from shortcuts / menus
   useEffect(() => {
     const h = () => setWaTick(t => t + 1)

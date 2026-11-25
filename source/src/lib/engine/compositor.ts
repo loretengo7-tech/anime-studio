@@ -20,6 +20,8 @@ import { EFFECT_MAP } from './effects'
 import { getPluginShaderChunk, pluginSelectionIndex, sanitizeParamKey, onPluginsChanged } from './plugins'
 import { layerHomography, type CamState } from './camera'
 import { getSolidCanvas, getShapeCanvas } from './proceduralSources'
+import { FxChain } from './fxpack'
+import { matteAt } from './cutout'
 
 export type TextureSource = HTMLVideoElement | HTMLImageElement | ImageBitmap | HTMLCanvasElement
 
@@ -2037,6 +2039,29 @@ export class Compositor {
       }
 
       // draw into the other buffer, sampling current as backdrop
+      // Studio FX pack: multi-pass effects processed on the layer texture first
+      let fxTex: WebGLTexture | null = null
+      if (src && efOn && FxChain.wants(clip.effects)) {
+        const t0 = this.getOrCreateTexture(clip.id, src)
+        if (t0) {
+          this.fx ??= new FxChain(gl as WebGLRenderingContext)
+          let matte: WebGLTexture | null = null
+          if (clip.effects.some(e => e.type === 'sx_cutout' && e.enabled)) {
+            const st = clip.kind === 'video' ? clipSourceTime(clip as VideoClip, localTime) : 0
+            const m = matteAt(clip.id, st)
+            if (m) matte = this.uploadMatte(clip.id, m)
+          }
+          fxTex = this.fx.apply(t0.tex, t0.w || srcW, t0.h || srcH, Math.max(rw, rh) * 1.25, clip.effects, localTime, time, { matte })
+          // restore the main program state the pack passes changed
+          gl.useProgram(this.prog)
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.quadVBO)
+          const ap = gl.getAttribLocation(this.prog, 'a_pos'), au = gl.getAttribLocation(this.prog, 'a_uv')
+          gl.enableVertexAttribArray(ap); gl.enableVertexAttribArray(au)
+          gl.vertexAttribPointer(ap, 2, gl.FLOAT, false, 16, 0)
+          gl.vertexAttribPointer(au, 2, gl.FLOAT, false, 16, 8)
+        }
+      }
+
       const srcPP = this.pp[this.ppIndex]
       const dstPP = this.pp[1 - this.ppIndex]
       gl.bindFramebuffer(gl.FRAMEBUFFER, dstPP.fbo)
@@ -2049,7 +2074,9 @@ export class Compositor {
       this.copyCompositeInto(srcPP, dstPP, rw, rh)
 
       gl.activeTexture(gl.TEXTURE0)
-      if (src) {
+      if (fxTex) {
+        gl.bindTexture(gl.TEXTURE_2D, fxTex)
+      } else if (src) {
         const t = this.getOrCreateTexture(clip.id, src)
         if (t) gl.bindTexture(gl.TEXTURE_2D, t.tex)
         else u.hasTex = 0
@@ -2258,6 +2285,32 @@ export class Compositor {
     gl.uniform1f(this.loc('u_srcFlip'), 1)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     this.ppIndex = 1 - this.ppIndex
+  }
+
+  private fx: FxChain | null = null
+  private matteTex = new Map<string, { tex: WebGLTexture; key: string }>()
+  private uploadMatte(clipId: string, m: { data: Uint8Array; w: number; h: number; key: string }): WebGLTexture {
+    const gl = this.gl!
+    let e = this.matteTex.get(clipId)
+    if (!e) {
+      const tex = gl.createTexture()!
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      e = { tex, key: '' }
+      this.matteTex.set(clipId, e)
+    }
+    if (e.key !== m.key) {
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, e.tex)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, m.w, m.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, m.data)
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4)
+      e.key = m.key
+    }
+    return e.tex
   }
 
   // ---- nested compositions ----

@@ -216,16 +216,16 @@ export function EffectsPresetsPanel() {
   const selectedClipId = useEditorStore(s => s.selectedClipId)
   const toast = useEditorStore(s => s.toast)
   const [q, setQ] = useState('')
-  const [open, setOpen] = useState<Record<string, boolean>>({ anime: true })
+  const [open, setOpen] = useState<Record<string, boolean>>({ 'pack:Studio FX': true })
   const defs = useMemo(() => [...EFFECT_DEFS, ...getPluginEffectDefs()], [])
   const groups = useMemo(() => {
     const m = new Map<string, typeof defs>()
     for (const d of defs) {
-      const k = d.pluginId ? `plugin:${d.pluginName ?? 'Plugins'}` : d.category
+      const k = d.pack ? `pack:${d.pack}` : d.pluginId ? `plugin:${d.pluginName ?? 'Plugins'}` : d.category
       if (!m.has(k)) m.set(k, [])
       m.get(k)!.push(d)
     }
-    return [...m.entries()].sort((a, b) => (CAT_NAMES[a[0]] ?? a[0]).localeCompare(CAT_NAMES[b[0]] ?? b[0]))
+    return [...m.entries()].sort((a, b) => (a[0].startsWith('pack:') ? -1 : b[0].startsWith('pack:') ? 1 : 0) || (CAT_NAMES[a[0]] ?? a[0]).localeCompare(CAT_NAMES[b[0]] ?? b[0]))
   }, [defs])
   const query = q.trim().toLowerCase()
   const apply = (type: string) => {
@@ -249,7 +249,7 @@ export function EffectsPresetsPanel() {
             <div key={cat}>
               <button className="w-full flex items-center gap-1 h-[21px] px-1 text-zinc-300 hover:bg-[#2c2c2c]" onClick={() => setOpen(o => ({ ...o, [cat]: !o[cat] }))}>
                 {isOpen ? <ChevronDown size={12} className="text-zinc-500" /> : <ChevronRight size={12} className="text-zinc-500" />}
-                <span className="truncate">{cat.startsWith('plugin:') ? cat.slice(7) : CAT_NAMES[cat] ?? cat}</span>
+                <span className="truncate">{cat.startsWith('pack:') ? `★ ${cat.slice(5)}` : cat.startsWith('plugin:') ? cat.slice(7) : CAT_NAMES[cat] ?? cat}</span>
               </button>
               {isOpen && shown.map(d => (
                 <div
@@ -454,7 +454,7 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
     mutate(d => {
       d.composition.width = Math.max(16, Math.min(8192, Math.round(w)))
       d.composition.height = Math.max(16, Math.min(8192, Math.round(h)))
-      d.composition.fps = Math.max(1, Math.min(120, fps))
+      d.composition.fps = Math.max(1, Math.min(240, fps))
       d.composition.duration = Math.max(0.5, Math.min(3600, dur))
       d.composition.background = bg
       d.composition.shutterAngle = Math.max(0, Math.min(720, shutter))
@@ -481,7 +481,7 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-2"><input className="ginput w-20" type="number" value={h} onChange={e => { const v = +e.target.value; setH(v); if (lock) setW(Math.round(v * ar)) }} /> px</div>
         <span className={lbl}>Frame Rate:</span>
         <select className="ginput w-32" value={fps} onChange={e => setFps(+e.target.value)}>
-          {[12, 15, 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60].map(f => <option key={f} value={f}>{f}</option>)}
+          {[12, 15, 23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 90, 100, 120, 144, 165, 180, 200, 240].map(f => <option key={f} value={f}>{f}</option>)}
         </select>
         <span className={lbl}>Duration:</span>
         <div className="flex items-center gap-2"><input className="ginput w-24" type="number" step={0.5} value={dur} onChange={e => setDur(+e.target.value)} /> s <span className="ae-timecode text-[11px]">{timecode(dur, fps)}</span></div>
@@ -501,38 +501,38 @@ export function CompSettingsDialog({ onClose }: { onClose: () => void }) {
 // ============================================================ Keyboard shortcuts
 
 export const SHORTCUTS: [string, string][] = [
-  ['Space', 'Play / stop preview'],
-  ['Home / End', 'Go to start / end'],
-  ['Page Up / Page Down, ← / →', 'Previous / next frame (Shift = 10 frames)'],
+  ['Space · 0 / Numpad 0', 'Play · RAM Preview'],
+  ['Home / End · Shift+Home/End', 'Comp start / end · work area start / end'],
+  ['Page Up / Down · Ctrl+← / →', 'Previous / next frame (Shift = 10)'],
+  ['I / O', 'Go to layer in / out point'],
   ['J / K', 'Previous / next keyframe'],
-  ['B / N', 'Set work area start / end'],
-  ['V · H · Z · W · Y · Q · G · Ctrl+T', 'Selection · Hand · Zoom · Rotation · Pan Behind · Rectangle · Pen · Type'],
-  ['P · S · R · T · A · U', 'Reveal Position · Scale · Rotation · Opacity · Anchor · animated props'],
+  ['B / N · Ctrl+Alt+B', 'Work area start / end · work area to selection'],
+  ['V H Z W Y Q G · Ctrl+T', 'Selection · Hand · Zoom · Rotation · Pan Behind · Shape · Pen · Type'],
+  ['P S R T A · U / UU · E · L', 'Reveal Position, Scale, Rotation, Opacity, Anchor · animated · effects · audio'],
   ['Shift + P/S/R/T/A', 'Add property to the revealed set'],
-  ['[ / ]', 'Move layer in / out point to CTI'],
-  ['Alt + [ / ]', 'Trim layer in / out point to CTI'],
-  ['Ctrl + [ / ]', 'Send backward / bring forward'],
-  ['Ctrl+D', 'Duplicate layer(s)'],
-  ['Ctrl+C / Ctrl+V', 'Copy / paste keyframes (at the CTI) or layers'],
-  ['Ctrl+A · Ctrl/Shift+click', 'Select all layers · add to selection'],
-  ['Ctrl+Shift+C', 'Pre-compose selected layers'],
-  ['0 / Numpad 0', 'RAM Preview (render work area to memory, play real time)'],
-  ['Alt+click stopwatch', 'Add / remove expression'],
-  ['Ctrl+Shift+D', 'Split layer'],
-  ['Ctrl+Y', 'New solid'],
-  ['Ctrl+Alt+Shift+T / Y', 'New text layer / null object'],
-  ['Ctrl+Alt+Y', 'New adjustment layer'],
-  ['Ctrl+K', 'Composition settings'],
-  ['Ctrl+M', 'Add to render queue (export)'],
-  ['Ctrl+I', 'Import file'],
-  ['Ctrl+S', 'Save project'],
+  ['Alt+Shift + P/S/R/T/A', 'Add keyframe at the CTI'],
+  ['← ↑ → ↓ (Shift)', 'Nudge selected layers 1 px (10 px)'],
+  ['Alt+Page Up / Down', 'Move layer 1 frame earlier / later (Shift = 10)'],
+  ['[ / ] · Alt+[ / ]', 'Move in/out point to CTI · trim in/out point'],
+  ['Ctrl+[ / ] (Shift)', 'Send backward / bring forward (to back / front)'],
+  ['Ctrl+C / X / V · Ctrl+D', 'Copy / cut / paste keyframes or layers · duplicate'],
+  ['Ctrl+A · Ctrl+Shift+A · F2', 'Select all · deselect all'],
+  ['Ctrl+Shift+D · Ctrl+Shift+C', 'Split layer · pre-compose'],
+  ['Ctrl+Y · Ctrl+Alt+Y', 'New solid · new adjustment layer'],
+  ['Ctrl+Alt+Shift+T / Y / C', 'New text · null · camera'],
+  ['Ctrl+N · Ctrl+K · Ctrl+M', 'New comp · comp settings · render queue'],
+  ['Ctrl+I · Ctrl+S · Ctrl+Shift+S', 'Import · save · save as'],
+  ['Ctrl+Home · Ctrl+Alt+F', 'Center layer · fit layer to comp'],
+  ['Ctrl+Alt+R · Ctrl+Alt+T · Ctrl+Shift+E', 'Time-reverse · time remap · remove all effects'],
+  ['F9 · Shift+F9 · Ctrl+Alt+H', 'Easy ease · ease in · hold keyframe'],
+  ['F3 · Shift+F3 · F4', 'Effect controls · graph editor · switches/modes'],
+  ['. / , · Ctrl+0 · ?', 'Zoom viewer in / out · fit'],
+  ['= / -', 'Zoom timeline in / out'],
+  ["' · Ctrl+'", 'Title/action safe · grid'],
+  ['` (tilde)', 'Maximize panel'],
+  ['Numpad *', 'Add marker'],
   ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / redo'],
-  ['F9', 'Easy ease selected keyframe'],
-  ['F3', 'Effect controls'],
-  ['Delete', 'Delete selected keyframe or layer'],
-  ['M', 'Add marker'],
-  ['Ctrl + wheel / + −', 'Zoom viewer'],
-  ['Shift+/ (?)', 'This list'],
+  ['Alt+click stopwatch', 'Add / remove expression'],
 ]
 
 export function ShortcutsPanel() {

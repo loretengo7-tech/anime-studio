@@ -152,6 +152,7 @@ export function MobileWorkspace({ panels }: { panels: PanelMap }) {
     { id: 'filters', label: 'Filters', icon: <Palette size={20} />, onClick: openQuick('filters') },
     { id: 'enhance', label: 'Enhance', icon: <Sparkles size={20} />, onClick: open('enhance') },
     { id: 'plugins', label: 'Plugins', icon: <Puzzle size={20} />, onClick: open('plugins') },
+    { id: 'beatsync', label: 'Beat Sync', icon: <AudioLines size={20} />, onClick: open('beatsync') },
     { id: 'ai', label: 'AI Edit', icon: <Wand2 size={20} />, onClick: open('ai'), accent: true },
     { id: 'settings', label: 'Settings', icon: <Settings size={20} />, onClick: open('settings') },
   ]
@@ -167,6 +168,7 @@ export function MobileWorkspace({ panels }: { panels: PanelMap }) {
     { id: 'inspector', label: 'Edit', icon: <SlidersHorizontal size={20} />, onClick: open('inspector') },
     { id: 'graph', label: 'Curve', icon: <Layers size={20} />, onClick: open('graph') },
     { id: 'tracker', label: 'Track', icon: <Crosshair size={20} />, onClick: open('tracker') },
+    { id: 'cutout', label: 'Cut-out', icon: <Scissors size={20} />, onClick: open('cutout') },
     { id: 'enhance', label: 'Enhance', icon: <Sparkles size={20} />, onClick: open('enhance') },
     { id: 'dup', label: 'Duplicate', icon: <Copy size={20} />, onClick: duplicate },
     { id: 'del', label: 'Delete', icon: <Trash2 size={20} />, onClick: remove, danger: true },

@@ -133,7 +133,7 @@ async function exportPrecise(
 ): Promise<ExportResult> {
   onProgress({ phase: 'prepare', progress: 0.02, message: 'Preparing render pipeline…' })
   const { width, height, fps } = settings
-  const bitrate = (settings.bitrateMbps ?? QUALITY_BITRATE[settings.quality]) * 1_000_000
+  const bitrate = (settings.bitrateMbps ?? QUALITY_BITRATE[settings.quality]) * 1_000_000 * Math.max(1, Math.pow(settings.fps / 60, 0.7))
 
   interface SimpleMuxer {
     addVideoChunk: (c: unknown, m: unknown) => void
@@ -146,7 +146,10 @@ async function exportPrecise(
   const sampleRate = 48000
   const channels = 2
 
-  const avcConfig: VideoEncoderConfig = { codec: 'avc1.42002A', width, height, bitrate, framerate: fps }
+  // H.264 level from the macroblock rate: 4.2 covers 1080p60; high fps (120–240) / 4K need 5.1–6.2
+  const mbps = Math.ceil(width / 16) * Math.ceil(height / 16) * fps
+  const level = mbps <= 245760 ? '2A' : mbps <= 589824 ? '33' : mbps <= 983040 ? '34' : '3E'
+  const avcConfig: VideoEncoderConfig = { codec: `avc1.4200${level}`, width, height, bitrate, framerate: fps }
   const vp9Config: VideoEncoderConfig = { codec: 'vp09.00.10.08', width, height, bitrate, framerate: fps }
   const [avcSupport, vp9Support] = await Promise.all([
     VideoEncoder.isConfigSupported(avcConfig).catch(() => null),

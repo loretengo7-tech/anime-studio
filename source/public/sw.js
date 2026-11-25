@@ -10,7 +10,7 @@
  * (https://user.github.io/repo/) because everything is derived from the
  * registration scope. Bump CACHE_VERSION to invalidate everything.
  */
-const CACHE_VERSION = 'as-v17'
+const CACHE_VERSION = 'as-v18'
 const BASE = new URL(self.registration.scope).pathname.replace(/\/$/, '')
 
 const SHELL = [

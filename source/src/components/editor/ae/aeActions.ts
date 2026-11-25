@@ -8,7 +8,8 @@ import { uid, makeClipBase, makeSolidClip, makeShapeClip, makeNullClip, makeCame
 import { useEditorStore } from '@/lib/store/editorStore'
 import { useUIStore } from '@/lib/store/uiStore'
 import { playbackEngine } from '@/lib/engine/playback'
-import { mediaManager, importMediaFile } from '@/lib/media/mediaManager'
+import { mediaManager, importMediaFile, desktopBridge } from '@/lib/media/mediaManager'
+import { generateLocalProxy } from '@/lib/media/proxy'
 import { STATIC_MODE, localImportUpload } from '@/lib/media/staticMode'
 import { evalProperty } from '@/lib/engine/keyframes'
 import { projectDuration } from '@/lib/engine/types'
@@ -135,6 +136,15 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
         })
       mutate(d => { d.assets.push(meta) })
       mediaManager.registerAsset(meta)
+      // Desktop app: heavy footage (above 1280 px or above 60 fps) gets an automatic ffmpeg proxy
+      if (desktopBridge() && meta.kind === 'video' && (meta.width > 1280 || meta.fps > 60)) {
+        const upsert = useEditorStore.getState().upsertJob
+        const id = `proxy-${meta.id}`
+        upsert({ id, kind: 'proxy', label: `Proxy ${meta.name}`, status: 'running', progress: 0.05 })
+        void generateLocalProxy(meta, p => upsert({ id, kind: 'proxy', label: `Proxy ${meta.name}`, status: 'running', progress: p.progress }))
+          .then(() => upsert({ id, kind: 'proxy', label: `Proxy ${meta.name}`, status: 'done', progress: 1 }))
+          .catch(() => upsert({ id, kind: 'proxy', label: `Proxy ${meta.name}`, status: 'error', progress: 0 }))
+      }
       toast({ kind: 'success', title: `Imported ${meta.name}`, detail: `${meta.kind} · ${meta.duration.toFixed(1)}s` })
     } catch (e) {
       toast({ kind: 'error', title: `Import failed: ${file.name}`, detail: e instanceof Error ? e.message : String(e) })
@@ -148,7 +158,7 @@ export function pickAndImport() {
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-  input.accept = 'video/*,audio/*,image/*'
+  input.accept = 'video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav'
   input.onchange = () => { void importFiles(input.files) }
   input.click()
 }
@@ -521,7 +531,7 @@ export function tcAE(t: number, fps: number): string {
   const fr = total % f
   const s = Math.floor(total / f)
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60
-  return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}:${String(fr).padStart(2, '0')}`
+  return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}:${String(fr).padStart(f > 99 ? 3 : 2, '0')}`
 }
 
 /** Parse "1:02:15" / "0:00:03:12" / "125" (frames) / "4.5s" into seconds. */
@@ -748,4 +758,35 @@ export function addCompLayer(pcId: string, at = now()) {
     d.clips.push({ ...makeClipBase(track.id, pc.name, Math.max(0, at), pc.composition.duration), id, kind: 'precomp', precompId: pc.id, label: 15 })
   })
   if (id) s.select(id)
+}
+
+/** Composition > New Composition (Ctrl+N): an empty comp with the current settings, opened. */
+export function newComposition() {
+  const s = st()
+  const id = uid('comp')
+  s.mutate(d => {
+    const n = (d.precomps?.filter(p => p.id !== 'main').length ?? 0) + 1
+    d.precomps = [...(d.precomps ?? []), {
+      id, name: `Comp ${n}`, composition: { ...d.composition },
+      tracks: [{ id: uid('track'), kind: 'video', name: 'Video 1', locked: false, visible: true, muted: false, height: 64 }], clips: [],
+    }]
+  })
+  openComp(id)
+}
+
+/** Layer > Transform > Fit to Comp (Ctrl+Alt+F). */
+export function fitLayersToComp() {
+  for (const c of selectedClips()) patchClip(c.id, x => {
+    x.x = 0; x.y = 0; x.rotation = 0; x.anchorX = 0; x.anchorY = 0; x.scale = 1
+    x.keyframes = x.keyframes.filter(k => !['x', 'y', 'scale', 'rotation', 'anchorX', 'anchorY'].includes(k.property))
+  })
+}
+
+/** Composition > Work Area to selected layers (Ctrl+Alt+B). */
+export function workAreaToSelection() {
+  const cs = selectedClips()
+  if (!cs.length) return
+  playbackEngine.state.inPoint = Math.min(...cs.map(c => c.start))
+  playbackEngine.state.outPoint = Math.max(...cs.map(c => c.start + c.duration))
+  window.dispatchEvent(new Event('as-workarea'))
 }

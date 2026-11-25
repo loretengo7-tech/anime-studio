@@ -29,7 +29,7 @@ import {
   newLayer, splitSelected, moveLayer, selectedClip, jumpKeyframe,
   setSelectedKeyEasing, deleteSelectedKeyframe, setWorkArea, clearWorkArea, layerToCTI, trimCompToWorkArea,
   saveFrameAs, pickAndImport, patchClip, copySelection, pasteClipboard, selectAllLayers, deleteSelectedLayers,
-  duplicateSelectedLayers, precomposeSelected, closeComp, selectedClips,
+  duplicateSelectedLayers, precomposeSelected, closeComp, selectedClips, toggleKeyAtCTI, newComposition, fitLayersToComp, workAreaToSelection,
 } from './aeActions'
 import {
   MousePointer2, Hand, ZoomIn, RotateCw, Move, Square, Circle, PenTool, Type, Home, Download,
@@ -53,6 +53,8 @@ const RIGHT_TABS: { id: string; title: string; panel?: string }[] = [
   { id: 'effects', title: 'Effects & Presets' },
   { id: 'text', title: 'Character', panel: 'text' },
   { id: 'color', title: 'Lumetri Color', panel: 'color' },
+  { id: 'beatsync', title: 'Beat Sync', panel: 'beatsync' },
+  { id: 'cutout', title: 'AI Cut-out', panel: 'cutout' },
   { id: 'audio', title: 'Audio', panel: 'audio' },
   { id: 'tracker', title: 'Tracker', panel: 'tracker' },
   { id: 'speed', title: 'Time Remap', panel: 'speed' },
@@ -91,6 +93,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
   const focus = useUIStore(s => s.focus)
   const setFocus = useUIStore(s => s.setFocus)
   const dialog = useUIStore(s => s.dialog)
+  const [maximized, setMaximized] = useState<'viewer' | 'timeline' | null>(null)
   const setDialog = useUIStore(s => s.setDialog)
 
   const [docks, setDocksState] = useState<Docks>(() => {
@@ -160,63 +163,120 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
       const same = cur && Array.isArray(cur.props) && cur.props.length === 1 && cur.props[0] === p && cur.clipIds.join() === ids.join()
       ui.setReveal(same ? null : { props: [p], clipIds: ids })
     }
+    let lastU = 0
+    const ids = () => selectedClips().map(c => c.id)
+    const toast = (m: string) => { if (m) useEditorStore.getState().toast({ kind: 'info', title: m }) }
+    const zoomV = (d: number | 'fit') => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: d }))
+    const nudgeTime = (frames: number) => {
+      const s = useEditorStore.getState(); const fps = Math.max(1, s.doc.composition.fps)
+      for (const id of ids()) patchClip(id, c => { c.start = Math.max(0, c.start + frames / fps) })
+    }
+    const nudgePos = (dx: number, dy: number) => {
+      for (const id of ids()) patchClip(id, c => {
+        const ax = c.keyframes.some(t => t.property === 'x' && t.keyframes.length), ay = c.keyframes.some(t => t.property === 'y' && t.keyframes.length)
+        if (!ax) c.x += dx
+        if (!ay) c.y += dy
+      })
+    }
+    // ---------------------------------------------------------------
+    // After Effects default keyboard map (Windows; Cmd = Ctrl on macOS)
+    // ---------------------------------------------------------------
     const onKey = (e: KeyboardEvent) => {
       const tgt = e.target as HTMLElement | null
       if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable || tgt.tagName === 'SELECT')) return
       const s = useEditorStore.getState()
       const mod = e.ctrlKey || e.metaKey
-      const k = e.key
+      const k = e.key, code = e.code
       const lower = k.length === 1 ? k.toLowerCase() : k
       const run = (fn: () => void) => { e.preventDefault(); fn() }
-      // ---- modifier combos ----
+      const hasSel = ids().length > 0
       if (mod) {
-        if (lower === 'z') return run(() => (e.shiftKey ? redo() : undo()))
-        if (lower === 'y' && e.shiftKey && e.altKey) return run(() => newLayer('null'))
-        if (lower === 'y' && e.altKey) return run(() => newLayer('adjustment'))
+        const sh = e.shiftKey, al = e.altKey
+        if (lower === 'z') return run(() => (sh ? redo() : undo()))
+        if (lower === 'y' && sh && al) return run(() => newLayer('null'))
+        if (lower === 'y' && al) return run(() => newLayer('adjustment'))
         if (lower === 'y') return run(() => newLayer('solid'))
-        if (lower === 't' && e.altKey && e.shiftKey) return run(() => newLayer('text'))
-        if (lower === 't' && !e.altKey) return run(() => setTool('text'))
-        if (lower === 'd' && e.shiftKey) return run(splitSelected)
+        if (lower === 't' && sh && al) return run(() => newLayer('text'))
+        if (lower === 'c' && sh && al) return run(() => newLayer('camera'))
+        if (lower === 't') return run(() => setTool('text'))
+        if (lower === 'd' && sh) return run(splitSelected)
         if (lower === 'd') return run(duplicateSelectedLayers)
-        if (lower === 'c' && e.shiftKey) return run(() => { if (!precomposeSelected()) s.toast({ kind: 'info', title: 'Select layers to pre-compose' }) })
-        if (lower === 'c') return run(() => { const m = copySelection(); if (m) s.toast({ kind: 'info', title: m }) })
-        if (lower === 'v') return run(() => { const m = pasteClipboard(); if (m) s.toast({ kind: 'info', title: m }) })
+        if (lower === 'c' && sh) return run(() => { if (!precomposeSelected()) toast('Select layers to pre-compose') })
+        if (lower === 'c') return run(() => toast(copySelection()))
+        if (lower === 'x') return run(() => { const m = copySelection(); if (m) { if (!deleteSelectedKeyframe()) deleteSelectedLayers() } toast(m.replace('copied', 'cut')) })
+        if (lower === 'v') return run(() => toast(pasteClipboard()))
+        if (lower === 'a' && sh) return run(() => s.select(null))
         if (lower === 'a') return run(selectAllLayers)
+        if (lower === 'n' && al) return run(() => setDialog('projects'))
+        if (lower === 'n') return run(() => newComposition())
+        if (lower === 'o') return run(() => setDialog('projects'))
         if (lower === 'k') return run(() => setDialog('comp'))
         if (lower === 'm') return run(() => setDialog('export'))
         if (lower === 'i') return run(pickAndImport)
-        if (lower === 's') return run(() => { s.saveLocal(); s.toast({ kind: 'success', title: 'Project saved', detail: 'Saved in this browser. File ▸ Save As downloads a project file.' }) })
-        if (lower === 'n' && e.altKey) return run(() => setDialog('projects'))
-        if (k === '[' || k === ']') { const c = selectedClip(); if (c) return run(() => moveLayer(c.id, k === ']' ? (e.shiftKey ? -Infinity : -1) : (e.shiftKey ? Infinity : 1))) }
-        if (k === '=' || k === '+') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 1 })))
-        if (k === '-') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: -1 })))
-        if (k === '0') return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 'fit' })))
+        if (lower === 's' && sh) return run(() => void downloadProjectFile(s.doc))
+        if (lower === 's') return run(() => { s.saveLocal(); s.toast({ kind: 'success', title: 'Project saved', detail: 'Saved on this device. Ctrl+Shift+S downloads a project file.' }) })
+        if (lower === 'e' && sh) return run(() => { for (const id of ids()) patchClip(id, c => { c.effects = [] }) })
+        if (lower === 'r' && al) return run(() => { for (const id of ids()) patchClip(id, c => { c.reverse = !c.reverse }) })
+        if (lower === 't' && al) return run(() => setDocks({ rightTab: 'speed', rightCollapsed: false }))
+        if (lower === 'h' && al) return run(() => setSelectedKeyEasing('hold'))
+        if (lower === 'f' && al) return run(() => fitLayersToComp())
+        if (lower === 'b' && al) return run(() => workAreaToSelection())
+        if (k === 'Home') return run(() => { for (const id of ids()) patchClip(id, c => { c.x = 0; c.y = 0; c.keyframes = c.keyframes.filter(t => t.property !== 'x' && t.property !== 'y') }) })
+        if (k === 'ArrowRight' || k === 'ArrowLeft') return run(() => playbackEngine.stepFrame((k === 'ArrowRight' ? 1 : -1) * (sh ? 10 : 1)))
+        if (k === "'" ) return run(() => useUIStore.getState().setGuides({ grid: !useUIStore.getState().guides.grid }))
+        if (k === '[' || k === ']' || code === 'BracketLeft' || code === 'BracketRight') {
+          const c = selectedClip(); const fwd = k === ']' || code === 'BracketRight'
+          if (c) return run(() => moveLayer(c.id, fwd ? (sh ? -Infinity : -1) : (sh ? Infinity : 1)))
+        }
+        if (k === '0') return run(() => zoomV('fit'))
         return
       }
-      if (e.altKey && (k === '[' || k === ']' || e.code === 'BracketLeft' || e.code === 'BracketRight')) return run(() => layerToCTI(k === '[' || e.code === 'BracketLeft' ? 'in' : 'out', true))
+      if (e.altKey) {
+        if (k === '[' || code === 'BracketLeft') return run(() => layerToCTI('in', true))
+        if (k === ']' || code === 'BracketRight') return run(() => layerToCTI('out', true))
+        if (k === 'PageUp') return run(() => nudgeTime(e.shiftKey ? -10 : -1))
+        if (k === 'PageDown') return run(() => nudgeTime(e.shiftKey ? 10 : 1))
+        if (k === 'Home') return run(() => { for (const id of ids()) patchClip(id, c => { c.start = 0 }) })
+        if (k === 'End') return run(() => { const end = s.doc.composition.duration; for (const id of ids()) patchClip(id, c => { c.start = Math.max(0, end - c.duration) }) })
+        if (e.shiftKey && hasSel) {
+          const map: Record<string, string[]> = { p: ['x', 'y'], s: ['scale'], r: ['rotation'], t: ['opacity'], a: ['anchorX', 'anchorY'] }
+          const props = map[code.replace('Key', '').toLowerCase()]
+          if (props) return run(() => { for (const id of ids()) toggleKeyAtCTI(id, props) })
+        }
+      }
+      if (code === 'Numpad0' || (k === '0' && !e.shiftKey)) return run(() => { if (playbackEngine.ramBuilding) playbackEngine.cancelRamPreview(); else void playbackEngine.ramPreview() })
+      if (code === 'NumpadMultiply' || k === '*') return run(() => s.mutate(d => { d.markers.push({ id: `mk_${Date.now()}`, time: playbackEngine.currentTime, label: 'Marker', color: '#a9cbc7' }) }))
       switch (k) {
         case ' ': return run(() => playbackEngine.toggle())
-        case 'Home': return run(() => { playbackEngine.pause(); playbackEngine.seek(playbackEngine.state.inPoint ?? 0) })
-        case 'End': return run(() => { playbackEngine.pause(); playbackEngine.goToEnd() })
-        case 'PageUp': case 'ArrowLeft': return run(() => playbackEngine.stepFrame(e.shiftKey ? -10 : -1))
-        case 'PageDown': case 'ArrowRight': return run(() => playbackEngine.stepFrame(e.shiftKey ? 10 : 1))
-        case 'ArrowUp': case 'ArrowDown': {
-          const c = selectedClip()
-          if (!c) return
-          // AE: arrows nudge the selected layer 1px (Shift = 10px)
-          return run(() => {
-            const n = e.shiftKey ? 10 : 1
-            patchClip(c.id, cl => { if (!cl.keyframes.some(t => t.property === 'y' && t.keyframes.length)) cl.y += k === 'ArrowUp' ? n : -n })
-          })
+        case 'Home': return run(() => { playbackEngine.pause(); playbackEngine.seek(e.shiftKey ? (playbackEngine.state.inPoint ?? 0) : 0) })
+        case 'End': return run(() => { playbackEngine.pause(); if (e.shiftKey && playbackEngine.state.outPoint !== null) playbackEngine.seek(playbackEngine.state.outPoint); else playbackEngine.goToEnd() })
+        case 'PageUp': return run(() => playbackEngine.stepFrame(e.shiftKey ? -10 : -1))
+        case 'PageDown': return run(() => playbackEngine.stepFrame(e.shiftKey ? 10 : 1))
+        case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown': {
+          const n = e.shiftKey ? 10 : 1
+          // AE: arrows nudge the selected layers 1 px (Shift = 10). Without a selection ←/→ step frames.
+          if (!hasSel) { if (k === 'ArrowLeft' || k === 'ArrowRight') return run(() => playbackEngine.stepFrame(k === 'ArrowRight' ? n : -n)); return }
+          return run(() => nudgePos(k === 'ArrowLeft' ? -n : k === 'ArrowRight' ? n : 0, k === 'ArrowUp' ? n : k === 'ArrowDown' ? -n : 0))
         }
         case 'Delete': case 'Backspace': return run(() => { if (!deleteSelectedKeyframe()) deleteSelectedLayers() })
-        case 'F9': return run(() => setSelectedKeyEasing('easeInOut'))
-        case 'F3': return run(() => setDocks({ leftTab: 'controls' }))
-        case 'F4': return
+        case 'F9': return run(() => setSelectedKeyEasing(e.shiftKey ? 'easeIn' : 'easeInOut'))
+        case 'F2': return run(() => s.select(null))
+        case 'F3': return run(() => { if (e.shiftKey) useUIStore.getState().setGraphMode(!useUIStore.getState().graphMode); else setDocks({ leftTab: 'controls' }) })
+        case 'F4': return run(() => window.dispatchEvent(new Event('as-toggle-modes')))
         case '[': return run(() => layerToCTI('in', false))
         case ']': return run(() => layerToCTI('out', false))
-        case '?': return run(() => setDialog('shortcuts'))
-        case 'Escape': return run(() => { if (playbackEngine.ramBuilding) { playbackEngine.cancelRamPreview(); return } s.select(null); useUIStore.getState().setReveal(null) })
+        case '?': return run(() => zoomV('fit'))
+        case '`': case '~': return run(() => setMaximized(m => (m ? null : useUIStore.getState().focus === 'timeline' ? 'timeline' : 'viewer')))
+        case "'": return run(() => useUIStore.getState().setGuides({ safe: !useUIStore.getState().guides.safe }))
+        case '.': return run(() => zoomV(1))
+        case ',': return run(() => zoomV(-1))
+        case '=': case '+': return run(() => window.dispatchEvent(new CustomEvent('as-tl-zoom', { detail: 1 })))
+        case '-': return run(() => window.dispatchEvent(new CustomEvent('as-tl-zoom', { detail: -1 })))
+        case 'Escape': return run(() => { if (playbackEngine.ramBuilding) { playbackEngine.cancelRamPreview(); return } useUIStore.getState().setCutoutPick(null); s.select(null); useUIStore.getState().setReveal(null) })
+      }
+      if (e.shiftKey && 'psrta'.includes(lower)) {
+        const m: Record<string, RevealProp> = { p: 'position', s: 'scale', r: 'rotation', t: 'opacity', a: 'anchor' }
+        return run(() => reveal(m[lower], true))
       }
       switch (lower) {
         case 'v': return run(() => setTool('select'))
@@ -228,19 +288,18 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         case 'g': return run(() => setTool('pen'))
         case 'j': return run(() => jumpKeyframe(-1))
         case 'k': return run(() => jumpKeyframe(1))
+        case 'i': return run(() => { const c = selectedClip(); if (c) { playbackEngine.pause(); playbackEngine.seek(c.start) } })
+        case 'o': return run(() => { const c = selectedClip(); if (c) { playbackEngine.pause(); playbackEngine.seek(c.start + c.duration - 1 / Math.max(1, s.doc.composition.fps)) } })
         case 'b': return run(() => setWorkArea('in'))
         case 'n': return run(() => setWorkArea('out'))
-        case 'p': return run(() => reveal('position', e.shiftKey))
-        case 's': return run(() => reveal('scale', e.shiftKey))
-        case 'r': return run(() => reveal('rotation', e.shiftKey))
-        case 't': return run(() => reveal('opacity', e.shiftKey))
-        case 'a': return run(() => reveal('anchor', e.shiftKey))
-        case 'u': return run(() => reveal('animated', false))
-        case 'm': return run(() => s.mutate(d => { d.markers.push({ id: `mk_${Date.now()}`, time: playbackEngine.currentTime, label: 'Marker', color: '#a9cbc7' }) }))
-        case '0': return run(() => { if (playbackEngine.ramBuilding) playbackEngine.cancelRamPreview(); else void playbackEngine.ramPreview() })
-        case '.': return
-        case '=': case '+': return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: 1 })))
-        case '-': return run(() => window.dispatchEvent(new CustomEvent('as-viewer-zoom', { detail: -1 })))
+        case 'p': return run(() => reveal('position', false))
+        case 's': return run(() => reveal('scale', false))
+        case 'r': return run(() => reveal('rotation', false))
+        case 't': return run(() => reveal('opacity', false))
+        case 'a': return run(() => reveal('anchor', false))
+        case 'u': { const now = Date.now(); const dbl = now - lastU < 450; lastU = now; return run(() => { if (dbl) useUIStore.getState().setReveal({ props: 'animated', clipIds: ids().length ? ids() : s.doc.clips.map(c => c.id) }); else reveal('animated', false) }) }
+        case 'e': return run(() => { const ui = useUIStore.getState(); for (const c of (ids().length ? selectedClips() : s.doc.clips)) if (c.effects.length) ui.setOpen(c.id, !ui.open[c.id]); ui.setReveal(null) })
+        case 'l': return run(() => { const ui = useUIStore.getState(); for (const id of ids()) ui.setOpen(id, true); ui.setReveal(null) })
       }
     }
     window.addEventListener('keydown', onKey)
@@ -287,6 +346,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
     },
     {
       label: 'Composition', items: [
+        { label: 'New Composition…', sc: 'Ctrl+N', action: newComposition },
         { label: 'Composition Settings…', sc: 'Ctrl+K', action: () => setDialog('comp') },
         { label: 'Trim Comp to Work Area', action: trimCompToWorkArea },
         { label: 'Clear Work Area', action: clearWorkArea },
@@ -462,16 +522,16 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
       )}
 
       {/* ---------- upper frame ---------- */}
-      <div className="flex-1 min-h-0 flex px-[3px] pt-[3px]">
+      <div className="flex-1 min-h-0 flex px-[3px] pt-[3px]" style={{ display: maximized === 'timeline' ? 'none' : undefined }}>
         {/* left: Project | Effect Controls */}
-        <Panel
+        {maximized !== 'viewer' && <><Panel
           style={{ width: docks.leftW }} active={focus === 'left'} onFocus={() => setFocus('left')}
           tabs={[{ id: 'project', title: 'Project' }, { id: 'controls', title: sel ? `Effect Controls ${sel.name}` : 'Effect Controls' }]}
           tab={docks.leftTab} onTab={id => setDocks({ leftTab: id })}
         >
           {docks.leftTab === 'project' ? <ProjectPanel /> : <div className="h-full overflow-auto as-scroll ae-sheet"><Inspector /></div>}
         </Panel>
-        <div className="ae-gutter ae-gutter-v" onPointerDown={gDown('left')} />
+        <div className="ae-gutter ae-gutter-v" onPointerDown={gDown('left')} /></>}
 
         {/* center: composition viewer */}
         <Panel
@@ -482,7 +542,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         </Panel>
 
         {/* right column */}
-        {!docks.rightCollapsed ? (
+        {maximized === 'viewer' ? null : !docks.rightCollapsed ? (
           <>
             <div className="ae-gutter ae-gutter-v" onPointerDown={gDown('right')} />
             <div className="flex flex-col min-h-0 gap-[3px]" style={{ width: docks.rightW }}>
@@ -505,10 +565,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         )}
       </div>
 
-      <div className="ae-gutter ae-gutter-h mx-[3px]" onPointerDown={gDown('tl')} />
+      {maximized === null && <div className="ae-gutter ae-gutter-h mx-[3px]" onPointerDown={gDown('tl')} />}
 
       {/* ---------- timeline ---------- */}
-      <div className="shrink-0 px-[3px] pb-[3px] min-h-0" style={{ height: docks.timelineH }}>
+      <div className={`px-[3px] pb-[3px] min-h-0 ${maximized === 'timeline' ? 'flex-1 pt-[3px]' : 'shrink-0'}`} style={{ height: maximized === 'timeline' ? undefined : docks.timelineH, display: maximized === 'viewer' ? 'none' : undefined }}>
         <Panel
           className="h-full" active={focus === 'timeline'} onFocus={() => setFocus('timeline')}
           tabs={[{ id: 'tl', title: doc.compName ?? doc.name }]} tab="tl" onTab={() => { }} tabIcon
