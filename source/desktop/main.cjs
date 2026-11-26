@@ -8,23 +8,73 @@
  *    AVI, ProRes…) and builds lightweight preview proxies fast
  *  - more memory for the RAM preview cache
  */
-const { app, BrowserWindow, protocol, net, ipcMain, shell, session } = require('electron')
+const { app, BrowserWindow, protocol, net, ipcMain, shell, session, dialog } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs')
 const os = require('node:os')
 const { spawn } = require('node:child_process')
 const { pathToFileURL } = require('node:url')
 
-// ---------- performance switches ----------
-app.commandLine.appendSwitch('ignore-gpu-blocklist')
-app.commandLine.appendSwitch('enable-gpu-rasterization')
-app.commandLine.appendSwitch('enable-zero-copy')
+// ---------- crash log (so a window that "doesn't open" leaves a reason) ----------
+let logFile = null
+function log(...a) {
+  const line = `[${new Date().toISOString()}] ${a.map(x => (x && x.stack) || String(x)).join(' ')}\n`
+  try { process.stdout.write(line) } catch { }
+  try {
+    if (!logFile) {
+      const dir = path.join(app.getPath('userData'), 'logs')
+      fs.mkdirSync(dir, { recursive: true })
+      logFile = path.join(dir, 'main.log')
+      try { if (fs.statSync(logFile).size > 2e6) fs.rmSync(logFile) } catch { }
+    }
+    fs.appendFileSync(logFile, line)
+  } catch { }
+}
+process.on('uncaughtException', e => {
+  log('uncaughtException', e)
+  try { dialog.showErrorBox('AnimeStudio', `Error al iniciar:\n${e && e.message}\n\nLog: ${logFile || ''}`) } catch { }
+})
+process.on('unhandledRejection', e => log('unhandledRejection', e))
+
+// ---------- GPU mode ----------
+// Safe mode = no forced GPU flags. It is used automatically when the GPU
+// process crashes at startup (some drivers die with zero-copy / ignored
+// blocklist), or with --safe-gpu.
+const SAFE_FLAG = path.join(app.getPath('userData'), 'safe-gpu')
+const safeGpu = process.argv.includes('--safe-gpu') || fs.existsSync(SAFE_FLAG)
+if (!safeGpu) {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  app.commandLine.appendSwitch('enable-gpu-rasterization')
+  app.commandLine.appendSwitch('enable-zero-copy')
+  app.commandLine.appendSwitch('force_high_performance_gpu')
+  app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,CanvasOopRasterization')
+}
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
-app.commandLine.appendSwitch('force_high_performance_gpu')
-app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,CanvasOopRasterization,VaapiVideoDecoder')
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192')
+
+// one window only: a 2nd launch (double click on the shortcut) focuses it
+// instead of starting a second copy fighting over the same profile / GPU cache
+if (!process.env.AS_SMOKE && !app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const w = BrowserWindow.getAllWindows()[0]
+    if (w) { if (w.isMinimized()) w.restore(); w.show(); w.focus() }
+  })
+}
+
+let gpuCrashes = 0
+app.on('child-process-gone', (_e, d) => {
+  log('child-process-gone', JSON.stringify(d))
+  if (d.type === 'GPU' && !safeGpu && ++gpuCrashes >= 2) {
+    try { fs.writeFileSync(SAFE_FLAG, '1') } catch { }
+    log('GPU crashed twice — relaunching in safe GPU mode')
+    app.relaunch({ args: [...process.argv.slice(1), '--safe-gpu'] })
+    app.exit(0)
+  }
+})
 
 const APP_DIR = path.join(__dirname, 'app')
 
@@ -73,7 +123,9 @@ ipcMain.handle('as:transcode', async (_e, { name, data, preset }) => {
 ipcMain.handle('as:gpu', async () => JSON.stringify(await app.getGPUInfo('basic')))
 
 function createWindow() {
+  log('start', app.getVersion(), process.execPath, 'appDir=' + APP_DIR, 'exists=' + fs.existsSync(path.join(APP_DIR, 'index.html')), safeGpu ? 'safe-gpu' : 'gpu')
   const win = new BrowserWindow({
+    show: false,
     width: 1600, height: 960, minWidth: 1100, minHeight: 700,
     backgroundColor: '#1b1b1b',
     title: 'AnimeStudio',
@@ -93,8 +145,25 @@ function createWindow() {
     if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools()
     if (input.type === 'keyDown' && input.key === 'F11') win.setFullScreen(!win.isFullScreen())
   })
-  void win.loadURL('app://animestudio/index.html')
-  win.maximize()
+  let shown = false
+  const reveal = () => { if (shown || win.isDestroyed()) return; shown = true; win.maximize(); win.show() }
+  win.once('ready-to-show', reveal)
+  setTimeout(reveal, 6000) // never leave an invisible window behind
+  win.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    log('did-fail-load', code, desc, url)
+    if (code === -3) return // aborted (navigation replaced) — harmless
+    reveal()
+    dialog.showErrorBox('AnimeStudio', `No se pudo cargar el editor (${code} ${desc}).\n${url}\n\nLog: ${logFile || ''}`)
+  })
+  let renderCrashes = 0
+  win.webContents.on('render-process-gone', (_e, d) => {
+    log('render-process-gone', JSON.stringify(d))
+    if (d.reason === 'clean-exit') return
+    if (++renderCrashes <= 2) win.webContents.reload()
+    else dialog.showErrorBox('AnimeStudio', `El editor se cerró (${d.reason}). Log: ${logFile || ''}`)
+  })
+  win.webContents.on('console-message', (_e, level, message) => { if (level >= 3) log('renderer', message) })
+  win.loadURL('app://animestudio/index.html').catch(e => log('loadURL', e))
   // CI / support smoke test: AS_SMOKE=<png path> loads the app, checks the desktop bridge, saves a screenshot, quits
   if (process.env.AS_SMOKE) {
     win.webContents.once('did-finish-load', () => setTimeout(async () => {
@@ -116,22 +185,33 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   protocol.handle('app', req => {
+    try { return serveApp(req) } catch (e) { log('protocol', req.url, e); return new Response(String(e), { status: 500 }) }
+  })
+  // allow microphone/camera prompts used by some panels
+  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
+  // the web build's offline service worker must never run in the desktop app:
+  // after an update it served the OLD cached index/chunks → blank window.
+  try { await session.defaultSession.clearStorageData({ storages: ['serviceworkers', 'cachestorage'] }) } catch (e) { log('clearStorage', e) }
+  createWindow()
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+}).catch(e => { log('whenReady', e); dialog.showErrorBox('AnimeStudio', String(e && e.stack || e)) })
+
+function serveApp(req) {
+  {
     const { pathname } = new URL(req.url)
     let rel = decodeURIComponent(pathname)
     if (rel === '/__smoke_media' && process.env.AS_SMOKE_MEDIA) return net.fetch(pathToFileURL(process.env.AS_SMOKE_MEDIA).toString())
     if (rel.endsWith('/')) rel += 'index.html'
     let file = path.normalize(path.join(APP_DIR, rel))
-    if (!file.startsWith(APP_DIR)) return new Response('forbidden', { status: 403 })
+    const rootN = path.resolve(APP_DIR), fileN = path.resolve(file)
+    const inside = process.platform === 'win32' ? fileN.toLowerCase().startsWith(rootN.toLowerCase()) : fileN.startsWith(rootN)
+    if (!inside) return new Response('forbidden', { status: 403 })
     if (!fs.existsSync(file) && fs.existsSync(file + '.html')) file += '.html'
     if (!fs.existsSync(file)) file = path.join(APP_DIR, 'index.html')
     return net.fetch(pathToFileURL(file).toString())
-  })
-  // allow microphone/camera prompts used by some panels
-  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(true))
-  createWindow()
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
-})
+  }
+}
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

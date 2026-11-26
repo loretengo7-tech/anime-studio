@@ -1,5 +1,20 @@
 # ANIME STUDIO — Código fuente completo
 
+## v19 — Preview sin parpadeo, audio fluido, Enhance arreglado, instalador de PC
+
+- **Parpadeo negro del preview**: la caché RAM pausaba los videos en cada cuadro cacheado y el
+  siguiente cuadro "en vivo" tenía que volver a buscar (seek) → cuadro negro. Ahora los videos
+  siguen corriendo y, si un video se está re-cargando, se muestra su último cuadro (nunca negro).
+- **Audio trabado**: el motor hacía seek a los videos cada vez que el reloj se desviaba 80 ms
+  (cortaba el audio). Ahora corrige la desviación ajustando la velocidad ±6 % (inaudible) y solo
+  hace seek en saltos reales. Los videos no enrutados al mezclador quedan mudos (antes sonaban doble).
+- **Enhance**: el shader no compilaba (`flat` es palabra reservada en GLSL). Arreglado, y nuevo
+  botón **"Apply enhance to clip (live)"** → efecto *Detail Restore* en vivo (preview + export).
+- **Escritorio**: registro en `%APPDATA%\AnimeStudio\logs\main.log`, mensajes de error en vez de
+  cerrarse en silencio, modo GPU seguro automático (`--safe-gpu`), una sola instancia, sin service
+  worker (servía archivos viejos tras actualizar). El CI instala el Setup.exe y verifica que la app
+  instalada y la portable abran antes de publicar.
+
 Paquete con TODO el código del proyecto. Esta versión incluye:
 
 - **FIX DE EXPORT** (el arreglo de los errores al exportar video):

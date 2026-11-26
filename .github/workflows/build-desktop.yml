@@ -60,6 +60,30 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --win --x64 --publish never
+      - name: Smoke test — installed app (Setup.exe) and portable must both open
+        working-directory: source/desktop
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\*Setup.exe | Select-Object -First 1
+          Start-Process $setup.FullName -ArgumentList '/S','/D=C:\ASInstall' -Wait
+          Get-ChildItem C:\ASInstall | Select-Object -ExpandProperty Name
+          $fails = @()
+          foreach ($t in @(@{ name = 'installed'; exe = 'C:\ASInstall\AnimeStudio.exe' }, @{ name = 'portable'; exe = (Get-ChildItem dist\*portable.exe | Select-Object -First 1).FullName })) {
+            $env:AS_SMOKE = "$env:RUNNER_TEMP\smoke-$($t.name).png"
+            $p = Start-Process $t.exe -PassThru
+            if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+            Get-Process AnimeStudio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            if (Test-Path $env:AS_SMOKE) { Write-Host "OK  $($t.name) rendered" } else { Write-Host "FAIL $($t.name)"; $fails += $t.name }
+            Start-Sleep -Seconds 2
+          }
+          Write-Host '--- main.log ---'
+          Get-Content "$env:APPDATA\AnimeStudio\logs\main.log" -ErrorAction SilentlyContinue
+          if ($fails.Count) { throw "smoke failed: $fails" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-screenshots
+          path: ${{ runner.temp }}/smoke-*.png
       - name: Version
         id: v
         shell: bash
@@ -85,4 +109,7 @@ jobs:
             ffmpeg incluido (abre MKV/HEVC/AVI/ProRes y crea proxies rápidos automáticamente).
 
             Windows puede mostrar "SmartScreen" porque el .exe no está firmado: *Más información → Ejecutar de todas formas*.
+
+            Si algo no abre: el registro está en `%APPDATA%\AnimeStudio\logs\main.log`.
+            Si la GPU falla, la app se reinicia sola en modo GPU seguro (o ejecútala con `--safe-gpu`).
           files: source/desktop/dist/*.exe

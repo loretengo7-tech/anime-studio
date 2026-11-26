@@ -286,6 +286,40 @@ const EFFECTS: PackEffect[] = [
   },
   {
     def: {
+      type: 'sx_enhance', name: 'Detail Restore (Enhance)', category: 'color',
+      description: 'Live Topaz-style restore: edge-aware denoise + deblock, then line-directed sharpen and detail reinjection.',
+      params: [P('denoise', 'Denoise', 0, 1, 0.01, 0.35), P('deblock', 'Deblock', 0, 1, 0.01, 0.3), P('sharpen', 'Line sharpen', 0, 1, 0.01, 0.5), P('detail', 'Detail recon', 0, 1, 0.01, 0.3), P('linePreserve', 'Line protect', 0, 1, 0.01, 0.6)],
+    },
+    passes: [
+      { input: 'prev', fs: HEAD + `uniform float u_p_denoise, u_p_deblock;
+      void main(){ vec2 px=1.0/u_res; vec4 c0=T(u_tex,v_uv); vec3 c=c0.rgb; float cl=luma(c);
+        vec3 acc=vec3(0.0); float ws=0.0;
+        for(int i=0;i<8;i++){ float a=float(i)*0.7853981; vec3 s=T(u_tex,v_uv+vec2(cos(a),sin(a))*px*(1.0+u_p_denoise*2.0)).rgb;
+          float w=exp(-abs(luma(s)-cl)*(6.0+18.0*(1.0-u_p_denoise))); acc+=s*w; ws+=w; }
+        vec3 dn=acc/max(ws,1e-4);
+        vec3 ba=(T(u_tex,v_uv+vec2(2.0*px.x,0.0)).rgb+T(u_tex,v_uv-vec2(2.0*px.x,0.0)).rgb+T(u_tex,v_uv+vec2(0.0,2.0*px.y)).rgb+T(u_tex,v_uv-vec2(0.0,2.0*px.y)).rgb)*0.25;
+        float v=abs(luma(ba)-cl); float flatM=1.0-smoothstep(0.02,0.12,v);
+        vec3 o=mix(c,dn,u_p_denoise); o=mix(o,ba,u_p_deblock*flatM*0.8);
+        gl_FragColor=vec4(o,c0.a); }` },
+      { input: 'prev', fs: HEAD + `uniform float u_p_sharpen, u_p_detail, u_p_linePreserve;
+      void main(){ vec2 px=1.0/u_res; vec4 c0=T(u_tex,v_uv); vec3 c=c0.rgb; float lum=luma(c);
+        float tl=luma(T(u_tex,v_uv+vec2(-px.x,-px.y)).rgb), tt=luma(T(u_tex,v_uv+vec2(0.0,-px.y)).rgb), tr=luma(T(u_tex,v_uv+vec2(px.x,-px.y)).rgb);
+        float l=luma(T(u_tex,v_uv+vec2(-px.x,0.0)).rgb), r=luma(T(u_tex,v_uv+vec2(px.x,0.0)).rgb);
+        float bl=luma(T(u_tex,v_uv+vec2(-px.x,px.y)).rgb), bb=luma(T(u_tex,v_uv+vec2(0.0,px.y)).rgb), br=luma(T(u_tex,v_uv+vec2(px.x,px.y)).rgb);
+        float gx=-tl-2.0*l-bl+tr+2.0*r+br, gy=-tl-2.0*tt-tr+bl+2.0*bb+br; float gm=length(vec2(gx,gy));
+        float edge=clamp(gm*1.4,0.0,1.0); vec2 g=gm>0.0001?vec2(gx,gy)/gm:vec2(0.0);
+        vec3 al=(T(u_tex,v_uv+g*px*1.25).rgb+T(u_tex,v_uv-g*px*1.25).rgb)*0.5;
+        float mask=mix(edge,max(edge,0.22),1.0-u_p_linePreserve);
+        vec3 o=c+(c-al)*u_p_sharpen*2.6*mask;
+        vec3 fine=(T(u_tex,v_uv+vec2(px.x,0.0)).rgb+T(u_tex,v_uv-vec2(px.x,0.0)).rgb+T(u_tex,v_uv+vec2(0.0,px.y)).rgb+T(u_tex,v_uv-vec2(0.0,px.y)).rgb)*0.25;
+        vec3 wide=(T(u_tex,v_uv+vec2(px.x*3.0,0.0)).rgb+T(u_tex,v_uv-vec2(px.x*3.0,0.0)).rgb+T(u_tex,v_uv+vec2(0.0,px.y*3.0)).rgb+T(u_tex,v_uv-vec2(0.0,px.y*3.0)).rgb)*0.25;
+        float e2=clamp(abs(lum-luma(wide))*3.0,0.0,1.0); float lm=mix(0.45,clamp(e2*1.2,0.0,1.0),u_p_linePreserve);
+        o+= (c-fine)*u_p_detail*1.6*lm + (fine-wide)*u_p_detail*0.9;
+        gl_FragColor=vec4(clamp(o,0.0,1.0),c0.a); }` },
+    ],
+  },
+  {
+    def: {
       type: 'sx_ink', name: 'Ink Sketch', category: 'anime',
       description: 'Turns footage into inked line art over paper, or adds ink lines on top.',
       params: [P('lines', 'Line Strength', 0, 3, 0.05, 1.2), P('paper', 'Paper Mix', 0, 1, 0.01, 0.6), P('width', 'Line Width', 0.5, 4, 0.1, 1.2)],

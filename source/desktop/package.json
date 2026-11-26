@@ -1,8 +1,8 @@
 {
   "name": "animestudio-desktop",
   "productName": "AnimeStudio",
-  "version": "0.17.1",
-  "description": "AnimeStudio — After Effects-style anime video editor (desktop build)",
+  "version": "0.18.0",
+  "description": "AnimeStudio \u2014 After Effects-style anime video editor (desktop build)",
   "author": "Luis Caballero",
   "main": "main.cjs",
   "private": true,
@@ -21,16 +21,56 @@
   "build": {
     "appId": "online.animestudio.desktop",
     "productName": "AnimeStudio",
-    "files": ["main.cjs", "preload.cjs", "icon.png", "app/**/*"],
-    "asarUnpack": ["node_modules/ffmpeg-static/**"],
-    "directories": { "output": "dist" },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "icon.png",
+      "app/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }, { "target": "portable", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "icon.png",
       "artifactName": "AnimeStudio-${version}-${arch}-${target}.${ext}"
     },
-    "portable": { "artifactName": "AnimeStudio-${version}-portable.exe" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "artifactName": "AnimeStudio-${version}-Setup.exe" },
-    "linux": { "target": ["AppImage"], "category": "Video" }
+    "portable": {
+      "artifactName": "AnimeStudio-${version}-portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "AnimeStudio",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "AnimeStudio-${version}-Setup.exe"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Video"
+    }
   }
 }

@@ -36,6 +36,7 @@ export class AudioEngine {
   private srcCache = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>()
 
   private dropNode(node: ClipAudioNode) {
+    try { node.el.muted = true } catch { }
     try { node.source.disconnect() } catch { }
     try { node.gain.disconnect() } catch { }
     for (const n of node.filterNodes) { try { n.disconnect() } catch { } }
@@ -189,10 +190,13 @@ export class AudioEngine {
           node = { el, source, gain: gainNode, filterNodes: chain.nodes, clipId: clip.id }
           this.nodes.set(clip.id, node)
         } catch {
-          // element already attached to another context or unsupported
+          // element already attached to another context or unsupported:
+          // fall back to the element's own output so the clip is not silent
+          try { el.muted = muted; el.volume = Math.max(0, Math.min(1, gain)) } catch { }
           continue
         }
       }
+      if (el.muted) el.muted = false
       // volume
       const target = muted ? 0 : gain
       node.gain.gain.setTargetAtTime(target, ctx.currentTime, 0.02)
@@ -202,14 +206,24 @@ export class AudioEngine {
         const srcTime = clipSourceTime(ac, time - ac.start)
         const rate = clipAverageSpeed(ac) * (ac.reverse ? -1 : 1)
         const rateClamped = Math.min(16, Math.max(0.0625, Math.abs(rate) || 1))
-        if (Math.abs(el.playbackRate - rateClamped) > 0.01) {
+        if (Math.abs(el.playbackRate - rateClamped) > rateClamped * 0.07) {
           try { el.playbackRate = rateClamped } catch { }
         }
         if (playing) {
-          if (Math.abs(el.currentTime - srcTime) > 0.15) {
-            try { el.currentTime = srcTime } catch { }
+          // FIX (choppy audio): never seek a playing audio clip for small
+          // drift (that was an audible click/gap every ~second) — steer it
+          // with a tiny rate nudge; hard-seek only on real jumps.
+          const drift = el.currentTime - srcTime
+          if (el.paused) {
+            if (Math.abs(drift) > 0.04) { try { el.currentTime = srcTime } catch { } }
+            el.play().catch(() => { })
+          } else if (!el.seeking) {
+            if (Math.abs(drift) > 0.4) { try { el.currentTime = srcTime } catch { } }
+            else if (Math.abs(drift) > 0.03) {
+              const want = rateClamped * (1 - Math.max(-0.06, Math.min(0.06, drift * 0.5)))
+              try { el.playbackRate = want } catch { }
+            }
           }
-          if (el.paused) { el.play().catch(() => { }) }
         } else {
           if (!el.paused) el.pause()
           if (Math.abs(el.currentTime - srcTime) > 0.02) {

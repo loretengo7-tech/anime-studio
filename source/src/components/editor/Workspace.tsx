@@ -150,7 +150,7 @@ export function Workspace() {
     window.addEventListener('pointerdown', unlock, { once: true })
     // PWA service worker — production/static builds only (never in dev, HMR conflicts)
     // NEXT_PUBLIC_BASE_PATH keeps it working on GitHub Pages sub-path hosting too.
-    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator) {
+    if (process.env.NODE_ENV === 'production' && 'serviceWorker' in navigator && !(window as unknown as { animeStudioDesktop?: unknown }).animeStudioDesktop && location.protocol !== 'app:') {
       const bp = process.env.NEXT_PUBLIC_BASE_PATH || ''
       navigator.serviceWorker.register(`${bp}/sw.js`).catch(() => { /* offline install is best-effort */ })
     }

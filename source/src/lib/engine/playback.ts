@@ -211,9 +211,13 @@ class PlaybackEngine {
       this.rCompare = this.compareMode
       this.rW = canvas.width
       this.rH = canvas.height
-      audioEngine.sync(flattenForMedia(doc), this.state.time, this.state.playing, this.muted)
+      const md = flattenForMedia(doc)
+      this.driveMedia(md, this.state.time, this.state.playing)
+      audioEngine.sync(md, this.state.time, this.state.playing, this.muted)
     } else if (cached) {
-      audioEngine.sync(flattenForMedia(doc), this.state.time, this.state.playing, this.muted)
+      const md = flattenForMedia(doc)
+      this.driveMedia(md, this.state.time, this.state.playing)
+      audioEngine.sync(md, this.state.time, this.state.playing, this.muted)
     } else if (this.state.playing && !dirty) {
       // between comp frames: keep media/audio in sync, skip the GPU work
       const md = flattenForMedia(doc)
@@ -300,10 +304,12 @@ class PlaybackEngine {
   private enterCachedMode() {
     this.showingCache = true
     if (this.overlay) this.overlay.style.visibility = 'visible'
-    // stop decoding while the cache plays — this is where the smoothness comes from
-    for (const [, pool] of (mediaManager as unknown as { pools: Map<string, Map<string, { el: HTMLVideoElement }>> }).pools) {
-      for (const [, e] of pool) if (!e.el.paused) e.el.pause()
-    }
+    // FIX (flicker + choppy audio): the media elements used to be PAUSED here.
+    // With passive caching, cached and live frames alternate during playback:
+    // every live frame then found its element paused and out of position →
+    // seek → readyState < 2 → black frame, and the audio (which comes out of
+    // the same elements) was cut on every switch. Elements keep running now;
+    // the cache only skips the GPU compositing work.
   }
   private leaveCachedMode() {
     this.showingCache = false
@@ -424,7 +430,7 @@ class PlaybackEngine {
           const el = mediaManager.getElement(c as VideoClip)
           if (!el) continue
           if (!el.paused) el.pause()
-          seeks.push(mediaManager.seek(el, clipSourceTime(c as VideoClip, t - c.start)))
+          seeks.push(mediaManager.seek(el, clipSourceTime(c as VideoClip, t - c.start), { exact: true, capMs: 1500 }))
         }
         await Promise.all(seeks)
         this.state.time = t

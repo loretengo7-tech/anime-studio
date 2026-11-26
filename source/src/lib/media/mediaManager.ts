@@ -107,7 +107,10 @@ class MediaManagerImpl implements SourceProvider {
       el.playsInline = true
       el.preload = 'auto'
       el.crossOrigin = 'anonymous'
-      el.muted = false
+      // muted until the audio engine wires it into WebAudio: an element that
+      // is NOT routed (muted clip/track, context not created yet) used to play
+      // straight to the speakers on top of the mixed audio (double / echo)
+      el.muted = true
       el.volume = 1
       // iOS: must call load() after setting src
       el.load()
@@ -238,24 +241,49 @@ class MediaManagerImpl implements SourceProvider {
     })
   }
 
-  /** Play an element for realtime playback at given rate. Returns false if play() was blocked. */
+  private playPending = new WeakSet<HTMLMediaElement>()
+  /**
+   * Play an element for realtime playback at given rate. Returns false if play() was blocked.
+   *
+   * FIX (stutter / choppy audio): this runs on EVERY rAF. It used to seek the
+   * element whenever it drifted > 80 ms from the timeline clock — media clocks
+   * always drift a little, so playback kept seeking: the decoder dropped to
+   * readyState < 2 (black frame) and the audio coming out of the same element
+   * was chopped on every seek. Now a playing element is never seeked for small
+   * drift: it is steered back with a tiny playbackRate nudge (inaudible), and
+   * only a real jump (> 0.4 s: loop, scrub, clip entry) does a hard seek.
+   */
   async playAt(el: HTMLVideoElement, time: number, rate: number): Promise<boolean> {
+    if (this.playPending.has(el)) return true
     const clamped = Math.max(0, time)
-    if (Math.abs(el.currentTime - clamped) > 0.08) {
-      await this.seek(el, clamped)
-    }
-    if (Math.abs(el.playbackRate - rate) > 0.01) {
-      try { el.playbackRate = Math.min(16, Math.max(0.0625, rate)) } catch { /* range */ }
-    }
+    const base = Math.min(16, Math.max(0.0625, rate))
+    const drift = el.currentTime - clamped // + = element ahead
     if (el.paused) {
+      this.playPending.add(el)
       try {
+        if (Math.abs(drift) > 0.04 && !el.seeking) { try { el.currentTime = clamped } catch { } }
+        if (Math.abs(el.playbackRate - base) > 0.001) { try { el.playbackRate = base } catch { } }
         await el.play()
         delete el.dataset.playBlocked
+        return true
       } catch {
         // Autoplay policy blocked playback (no trusted gesture) — engine falls back to seek-driven rendering
         el.dataset.playBlocked = '1'
         return false
+      } finally {
+        this.playPending.delete(el)
       }
+    }
+    if (el.seeking) return true
+    let want = base
+    if (Math.abs(drift) > 0.4) {
+      try { el.currentTime = clamped } catch { }
+    } else if (Math.abs(drift) > 0.03) {
+      // proportional correction, at most ±6 % (pitch-preserved, not noticeable)
+      want = base * (1 - Math.max(-0.06, Math.min(0.06, drift * 0.5)))
+    }
+    if (Math.abs(el.playbackRate - want) > 0.004) {
+      try { el.playbackRate = Math.min(16, Math.max(0.0625, want)) } catch { /* range */ }
     }
     return true
   }

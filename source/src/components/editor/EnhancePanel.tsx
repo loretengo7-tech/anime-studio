@@ -5,11 +5,12 @@
  */
 import { useMemo, useRef, useState } from 'react'
 import { useEditorStore } from '@/lib/store/editorStore'
+import { uid } from '@/lib/engine/types'
 import { enhanceFramePreview, ENHANCE_PRESETS } from '@/lib/engine/enhance'
 import type { EnhancePreset, EnhanceParams } from '@/lib/engine/enhance'
 import type { VideoClip, AudioClip } from '@/lib/engine/types'
 import { SectionTitle, Row, SliderRow } from './ui-bits'
-import { Loader2, Sparkles, MoveHorizontal } from 'lucide-react'
+import { Loader2, Sparkles, MoveHorizontal, Wand2 } from 'lucide-react'
 
 const PARAM_META: { key: keyof EnhanceParams; label: string; max: number; note: string }[] = [
   { key: 'denoise', label: 'Denoise', max: 1, note: 'edge-aware bilateral noise reduction' },
@@ -63,6 +64,27 @@ export function EnhancePanel() {
     }
   }
 
+  /** Apply the restore LIVE on the clip (preview + RAM preview + export) as the Detail Restore effect. */
+  const applyToClip = () => {
+    if (!videoClip) {
+      toast({ kind: 'error', title: 'Select a video clip in the timeline first' })
+      return
+    }
+    const fxParams = {
+      denoise: params.denoise, deblock: params.deblock, sharpen: params.sharpen,
+      detail: params.detail, linePreserve: params.linePreserve,
+    }
+    useEditorStore.getState().mutate(d => {
+      const c = d.clips.find(c => c.id === videoClip.id)
+      if (!c) return
+      const ex = c.effects.find(e => e.type === 'sx_enhance')
+      if (ex) { ex.params = { ...ex.params, ...fxParams }; ex.enabled = true }
+      else c.effects.push({ id: uid('fx'), type: 'sx_enhance', enabled: true, params: fxParams, paramKeyframes: {} })
+    })
+    toast({ kind: 'success', title: 'Detail Restore applied to clip', detail: 'Live in the preview and the export — tweak it in Effect Controls' })
+  }
+  const applied = !!videoClip?.effects.some(e => e.type === 'sx_enhance' && e.enabled)
+
   return (
     <div className="p-3 pb-10">
       <SectionTitle right={<span className="text-[10px] text-zinc-500">{scaleLabel}</span>}>
@@ -112,6 +134,16 @@ export function EnhancePanel() {
         {busy ? 'Processing frame…' : 'Enhance frame (before / after)'}
       </button>
 
+      <button
+        className="w-full mt-2 py-2.5 rounded-xl gbtn text-sm font-semibold flex items-center justify-center gap-2"
+        onClick={applyToClip}
+        disabled={!videoClip}
+        title={videoClip ? 'Adds / updates the Detail Restore effect on the selected clip' : 'Select a video clip first'}
+      >
+        <Wand2 size={14} />
+        {applied ? 'Update enhance on clip' : 'Apply enhance to clip (live)'}
+      </button>
+
       {result && (
         <div className="mt-3">
           <div className="text-[11px] text-zinc-400 mb-1.5 flex items-center gap-1.5">
@@ -120,7 +152,7 @@ export function EnhancePanel() {
           </div>
           <BeforeAfterSlider before={result.before} after={result.after} split={split} onSplit={setSplit} />
           <p className="text-[10px] text-zinc-600 mt-2">
-            Honest note: classical GPU pipeline (denoise → progressive upscale → edge-directed line sharpen → detail reinjection). Runs per-frame in the export pipeline when you pick an enhance preset in Export. Neural super-resolution awaits backend GPU integration.
+            Honest note: classical GPU pipeline (denoise → progressive upscale → edge-directed line sharpen → detail reinjection). Use “Apply enhance to clip” to run it live on the layer (preview + export), or pick an enhance preset in Export for the full upscale pass. Neural super-resolution awaits backend GPU integration.
           </p>
         </div>
       )}

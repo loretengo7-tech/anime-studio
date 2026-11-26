@@ -67,6 +67,14 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
 vec4 sampleTex(vec2 uv) { return texture2D(u_tex, uv); }
 
+float cubicWeight(float t) {
+  t = abs(t);
+  float t2 = t * t, t3 = t2 * t;
+  if (t < 1.0) return 1.5 * t3 - 2.5 * t2 + 1.0;
+  if (t < 2.0) return -0.5 * t3 + 2.5 * t2 - 4.0 * t + 2.0;
+  return 0.0;
+}
+
 // Catmull-Rom bicubic (separable 4-tap per axis using cubic weights)
 vec4 bicubic(vec2 uv) {
   vec2 texSize = u_texRes;
@@ -87,13 +95,6 @@ vec4 bicubic(vec2 uv) {
     }
   }
   return result / wsum;
-}
-float cubicWeight(float t) {
-  t = abs(t);
-  float t2 = t * t, t3 = t2 * t;
-  if (t < 1.0) return 1.5 * t3 - 2.5 * t2 + 1.0;
-  if (t < 2.0) return -0.5 * t3 + 2.5 * t2 - 4.0 * t + 2.0;
-  return 0.0;
 }
 
 void main() {
@@ -132,9 +133,9 @@ void main() {
       v += abs(luma(sampleTex(v_uv + dir * px * 2.0).rgb) - centerLum);
     }
     v /= 4.0;
-    float flat = 1.0 - smoothstep(0.02, 0.12, v);
+    float flatM = 1.0 - smoothstep(0.02, 0.12, v);
     vec3 outc = mix(center, denoised, u_denoise);
-    outc = mix(outc, blockAvg, u_deblock * flat * 0.8);
+    outc = mix(outc, blockAvg, u_deblock * flatM * 0.8);
     gl_FragColor = vec4(outc, 1.0);
   } else if (u_step < 1.5) {
     // Pass 1: bicubic upscale

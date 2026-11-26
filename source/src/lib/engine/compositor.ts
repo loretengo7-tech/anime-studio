@@ -1851,6 +1851,7 @@ export class Compositor {
       if (matteSkip.has(clip.id)) continue
 
       let src: TextureSource | null = null
+      let held: { tex: WebGLTexture; w: number; h: number } | null = null
       let srcW = 0, srcH = 0
       if (clip.kind === 'video') {
         const vc = clip as VideoClip
@@ -1861,6 +1862,13 @@ export class Compositor {
         const st = clipSourceTime(vc, effLocal)
         src = provider.get(vc, st)
         if (src) [srcW, srcH] = sourceSize(src)
+        else {
+          // FIX (flicker): while an element re-buffers / seeks (readyState < 2)
+          // keep showing its last uploaded frame instead of dropping the layer
+          // (that was the black frame alternating with real frames).
+          const last = this.texCache.get(clip.id)
+          if (last && last.w > 0 && last.h > 0) { held = last; src = last.src; srcW = last.w; srcH = last.h }
+        }
       } else if (clip.kind === 'image') {
         // Real image layers: full transform/opacity/blend/keyframes/mask/effects pipeline
         src = provider.get(clip as ImageClip, 0)
@@ -2042,7 +2050,7 @@ export class Compositor {
       // Studio FX pack: multi-pass effects processed on the layer texture first
       let fxTex: WebGLTexture | null = null
       if (src && efOn && FxChain.wants(clip.effects)) {
-        const t0 = this.getOrCreateTexture(clip.id, src)
+        const t0 = held ?? this.getOrCreateTexture(clip.id, src)
         if (t0) {
           this.fx ??= new FxChain(gl as WebGLRenderingContext)
           let matte: WebGLTexture | null = null
@@ -2077,7 +2085,7 @@ export class Compositor {
       if (fxTex) {
         gl.bindTexture(gl.TEXTURE_2D, fxTex)
       } else if (src) {
-        const t = this.getOrCreateTexture(clip.id, src)
+        const t = held ?? this.getOrCreateTexture(clip.id, src)
         if (t) gl.bindTexture(gl.TEXTURE_2D, t.tex)
         else u.hasTex = 0
       } else {
