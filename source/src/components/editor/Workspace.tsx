@@ -143,6 +143,15 @@ export function Workspace() {
     // IndexedDB autosave recovery (localStorage may have been cleared/blocked)
     void recoverAutosave()
     // re-register fonts the user installed (FontFace + IndexedDB)
+    // OpenFX plug-ins installed on this PC (desktop app)
+    void import('@/lib/engine/ofx').then(m => m.initOfx()).catch(() => { })
+    const ofxErrShown = new Set<string>()
+    window.addEventListener('as-ofx-error', e => {
+      const d = (e as CustomEvent<{ type: string; message: string }>).detail
+      if (ofxErrShown.has(d.type)) return
+      ofxErrShown.add(d.type)
+      useEditorStore.getState().toast({ kind: 'error', title: 'OpenFX plug-in error', detail: d.message })
+    })
     void restoreCustomFonts().catch(() => { /* font restore is cosmetic — report via fonts module */ })
     const iv = setInterval(() => {
       const s = useEditorStore.getState()

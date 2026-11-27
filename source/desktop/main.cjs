@@ -342,6 +342,36 @@ ipcMain.handle('as:videolab', async (e, { name, data, opts }) => {
   }
 })
 
+
+// ------------------------------------------------------------------ OpenFX plug-ins (see ofx.cjs)
+const { createOfx } = require('./ofx.cjs')
+function ofxDir() { return app.isPackaged ? path.join(process.resourcesPath, 'ofx') : path.join(__dirname, 'ofxhost', 'build') }
+let ofxMgr = null
+function ofx() {
+  if (!ofxMgr) ofxMgr = createOfx({
+    hostPath: path.join(ofxDir(), process.platform === 'win32' ? 'ofxhost.exe' : 'ofxhost'),
+    configPath: path.join(app.getPath('userData'), 'ofx.json'),
+    userPluginDir: path.join(app.getPath('userData'), 'OFX', 'Plugins'),
+    extraDirs: process.env.AS_OFX_DIR ? [process.env.AS_OFX_DIR] : [],
+    log,
+  })
+  return ofxMgr
+}
+ipcMain.handle('as:ofx-scan', async (_e, { force } = {}) => ofx().scan(!!force))
+ipcMain.handle('as:ofx-add-dir', async () => {
+  const r = await dialog.showOpenDialog({ title: 'Choose a folder with OpenFX plug-ins (.ofx.bundle)', properties: ['openDirectory'] })
+  if (r.canceled || !r.filePaths[0]) return null
+  return ofx().addDir(r.filePaths[0])
+})
+ipcMain.handle('as:ofx-open-dir', async () => {
+  const d = ofx().userPluginDir
+  fs.mkdirSync(d, { recursive: true })
+  await shell.openPath(d)
+  return d
+})
+ipcMain.handle('as:ofx-render', async (_e, req) => ofx().render(req))
+app.on('will-quit', () => { if (ofxMgr) ofxMgr.quit() })
+
 ipcMain.handle('as:gpu', async () => JSON.stringify(await app.getGPUInfo('basic')))
 
 function createWindow() {
@@ -403,9 +433,25 @@ function createWindow() {
           conv += ' | videolab ' + lab.name + ' ' + lab.data.byteLength
         }
         const ai = has && window.animeStudioDesktop.aiTools ? await window.animeStudioDesktop.aiTools() : null
-        return JSON.stringify({ has, conv, ai, title: document.title, gl: !!document.createElement('canvas').getContext('webgl2') })
+        let ofx = null
+        if (has && window.animeStudioDesktop.ofxScan) {
+          const sc = await window.animeStudioDesktop.ofxScan(true)
+          const pl = sc.results.flatMap(r => r.plugins)
+          ofx = { hostOk: sc.hostOk, plugins: pl.map(p => p.label), errors: sc.results.filter(r => r.err).map(r => r.err) }
+          if (pl[0]) {
+            const w = 32, hh = 16, px = new Uint8Array(w * hh * 4)
+            for (let i = 0; i < px.length; i += 4) { px[i] = 200; px[i + 1] = 100; px[i + 2] = 50; px[i + 3] = 255 }
+            try {
+              const r = await window.animeStudioDesktop.ofxRender({ bundle: pl[0].bundle, index: pl[0].index, w, h: hh, time: 0, params: { invert: 1 }, data: px.buffer })
+              const o = new Uint8Array(r.data)
+              ofx.render = [o[0], o[1], o[2], o[3]].join(',')
+            } catch (e) { ofx.render = 'ERR ' + e.message }
+          }
+        }
+        return JSON.stringify({ has, conv, ai, ofx, title: document.title, gl: !!document.createElement('canvas').getContext('webgl2') })
       })()`)
       console.log('[smoke]', info)
+      try { fs.writeFileSync(process.env.AS_SMOKE + '.json', info) } catch { }
       const img = await win.webContents.capturePage()
       fs.writeFileSync(process.env.AS_SMOKE, img.toPNG())
       app.quit()

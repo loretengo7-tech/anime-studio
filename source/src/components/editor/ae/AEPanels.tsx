@@ -248,7 +248,10 @@ export function EffectsPresetsPanel() {
   const toast = useEditorStore(s => s.toast)
   const [q, setQ] = useState('')
   const [open, setOpen] = useState<Record<string, boolean>>({ 'pack:Studio FX': true })
-  const defs = useMemo(() => [...EFFECT_DEFS, ...getPluginEffectDefs()], [])
+  // OpenFX plug-ins register later (desktop scan) → refresh the list
+  const [regVer, setRegVer] = useState(0)
+  useEffect(() => { const h = () => setRegVer(v => v + 1); window.addEventListener('as-effects-changed', h); return () => window.removeEventListener('as-effects-changed', h) }, [])
+  const defs = useMemo(() => [...EFFECT_DEFS, ...getPluginEffectDefs()], [regVer]) // eslint-disable-line react-hooks/exhaustive-deps
   const groups = useMemo(() => {
     const m = new Map<string, typeof defs>()
     for (const d of defs) {

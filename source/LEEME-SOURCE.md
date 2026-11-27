@@ -18,6 +18,15 @@
   Elipse con una capa seleccionada crean MÁSCARA (como After); la pluma y los puntos funcionan en
   la zona oscura alrededor del cuadro (pasteboard); la máscara se dibuja con curvas bezier.
 - **Fuentes personalizadas / autoguardado**: compartían base de datos y una rompía a la otra.
+- **Plug-ins OpenFX (app de PC)**: host OFX propio (`desktop/ofxhost/ofxhost.cpp`, headers
+  oficiales OpenFX BSD-3) que corre como proceso aparte: si un plug-in se cuelga se desactiva y el
+  editor sigue. Busca `.ofx.bundle` en `C:\Program Files\Common Files\OFX\Plugins`, la carpeta
+  propia de AnimeStudio y las que agregues (Plugins › OpenFX). Los plug-ins aparecen en Effects &
+  Presets con sus controles en Effect Controls (keyframeables). Preview asíncrono, export y RAM
+  Preview esperan el cuadro. `desktop/ofx.cjs` (proceso, escaneo, caché), `src/lib/engine/ofx.ts`.
+  Limitaciones: sin acceso a otros cuadros (efectos temporales tipo Twixtor OFX pueden fallar), sin
+  overlays en el visor, render por CPU (los plug-ins que exigen GPU OpenGL/CUDA no corren).
+  El CI compila `ofxhost.exe` (MSVC) y un plug-in de prueba y verifica que el instalador lo use.
 
 ## v22 — Pantalla de inicio con proyectos, proyectos de After Effects, presets .ffx, arreglos
 

@@ -7,6 +7,7 @@
  *  - Frame-accurate stepping and scrubbing
  *  - Time subscription for UI (playhead, timecode) without re-render storms
  */
+import { ofxPending, ofxPrepare } from './ofx'
 import type { ProjectDoc, VideoClip } from './types'
 import { projectDuration } from './types'
 import { Compositor, setCompositorFps } from './compositor'
@@ -241,7 +242,7 @@ class PlaybackEngine {
       })
       if (newFrame && this.state.playing) this.statsFrames++
       // passive caching: a frame played once replays from RAM (AE green bar)
-      if (this.cacheEnabled && this.seekInFlight.size === 0 && this.mediaSettled(doc, this.state.time) && (this.state.playing || nowT - this.rChanged > 300)) {
+      if (this.cacheEnabled && this.seekInFlight.size === 0 && !ofxPending() && this.mediaSettled(doc, this.state.time) && (this.state.playing || nowT - this.rChanged > 300)) {
         this.captureFrame(compFrame, canvas)
       }
     }
@@ -433,6 +434,7 @@ class PlaybackEngine {
           seeks.push(mediaManager.seek(el, clipSourceTime(c as VideoClip, t - c.start), { exact: true, capMs: 1500 }))
         }
         await Promise.all(seeks)
+        if (!this.compareMode) await ofxPrepare(doc, t, mediaManager)
         this.state.time = t
         this.compositor.render(doc, mediaManager, { time: t, bypassEffects: this.compareMode })
         this.captureFrame(f, canvas)

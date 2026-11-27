@@ -74,6 +74,22 @@ jobs:
           Copy-Item "$r\LICENSE" ai\rife\LICENSE.txt
           Remove-Item esr, rife, esr.zip, rife.zip -Recurse -Force
           Get-ChildItem ai -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Build the OpenFX host (MSVC) + test plug-in
+        working-directory: source/desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force ofxhost\build | Out-Null
+          cl /nologo /O2 /EHsc /std:c++17 /MT /W3 /I ofxhost\include ofxhost\ofxhost.cpp /Fo:ofxhost\build\ /Fe:ofxhost\build\ofxhost.exe
+          Remove-Item ofxhost\build\*.obj -ErrorAction SilentlyContinue
+          $b = "$env:RUNNER_TEMP\ofxtest\asTestFx.ofx.bundle\Contents\Win64"
+          New-Item -ItemType Directory -Force $b | Out-Null
+          cl /nologo /O2 /EHsc /std:c++17 /MT /LD /I ofxhost\include ofxhost\testplugin\asTestFx.cpp /Fo:"$env:RUNNER_TEMP\" /Fe:"$b\asTestFx.ofx"
+          if (-not (Test-Path "$b\asTestFx.ofx")) { throw 'test plug-in not built' }
+          $out = "DESCRIBE`t$env:RUNNER_TEMP\ofxtest\asTestFx.ofx.bundle`nQUIT`n" | .\ofxhost\build\ofxhost.exe
+          $out
+          if (-not ($out -match 'PLUGIN\s+0\s+com.animestudio.testvignette')) { throw 'ofxhost could not describe the test plug-in' }
       - name: Package (NSIS installer + portable exe)
         working-directory: source/desktop
         env:
@@ -95,15 +111,20 @@ jobs:
             if ($alt) { Write-Host "installed to $($alt.FullName) instead"; New-Item -ItemType Junction -Path C:\ASInstall -Target $alt.DirectoryName -Force | Out-Null }
           }
           $fails = @()
+          $env:AS_OFX_DIR = "$env:RUNNER_TEMP\ofxtest"
           foreach ($t in @(@{ name = 'installed'; exe = 'C:\ASInstall\AnimeStudio.exe' }, @{ name = 'portable'; exe = (Get-ChildItem dist\*portable.exe | Select-Object -First 1).FullName })) {
             $env:AS_SMOKE = "$env:RUNNER_TEMP\smoke-$($t.name).png"
             $p = Start-Process $t.exe -PassThru
             if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
             Get-Process AnimeStudio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             if (Test-Path $env:AS_SMOKE) { Write-Host "OK  $($t.name) rendered" } else { Write-Host "FAIL $($t.name)"; $fails += $t.name }
+            $j = Get-Content "$env:AS_SMOKE.json" -Raw -ErrorAction SilentlyContinue
+            Write-Host "smoke info: $j"
+            # OpenFX: the bundled host must load the test plug-in and invert 200,100,50 -> 55,155,205
+            if ($j -match '"render":"55,155,205,255"') { Write-Host "OK  $($t.name) OpenFX render" } else { Write-Host "FAIL $($t.name) OpenFX"; $fails += "$($t.name)-ofx" }
             Start-Sleep -Seconds 2
           }
-          foreach ($exe in 'C:\ASInstall\resources\ai\realesrgan\realesrgan-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-v4.6\flownet.bin') {
+          foreach ($exe in 'C:\ASInstall\resources\ofx\ofxhost.exe', 'C:\ASInstall\resources\ai\realesrgan\realesrgan-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-v4.6\flownet.bin') {
             if (Test-Path $exe) { Write-Host "OK  bundled $exe" } else { Write-Host "FAIL missing $exe"; $fails += 'ai' }
           }
           Write-Host '--- main.log ---'
@@ -137,6 +158,7 @@ jobs:
 
             Diferencias con la web: GPU forzada, sin límites de pestaña, más RAM para el RAM Preview,
             ffmpeg incluido (abre MKV/HEVC/AVI/ProRes y crea proxies rápidos automáticamente).
+            Plug-ins OpenFX (.ofx.bundle — p. ej. las versiones OFX de Sapphire, RSMB, Neat Video): Plugins › OpenFX.
             IA neuronal incluida en el Video Lab: Real-ESRGAN (AnimeVideo v3 / x4plus Anime) y RIFE 4.6
             (requieren una GPU con Vulkan: NVIDIA / AMD / Intel con drivers actualizados).
 

@@ -16,6 +16,7 @@
  *
  * Optional Topaz-style enhancement pass runs per frame before encoding.
  */
+import { ofxPrepare } from './ofx'
 import type { ProjectDoc } from './types'
 import { flattenForMedia, rootView } from './precomp'
 import { projectDuration } from './types'
@@ -322,6 +323,7 @@ async function exportPrecise(
       }
     }
     await seekAllForRender(doc, t)
+    await ofxPrepare(doc, t, mediaManager) // OpenFX layers: wait for the plug-in's full-res frame
     compositor.render(doc, mediaManager, { time: t })
     let frameSource: HTMLCanvasElement = canvas
     if (settings.enhancePreset) {

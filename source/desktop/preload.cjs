@@ -7,6 +7,10 @@ contextBridge.exposeInMainWorld('animeStudioDesktop', {
   cancelLab: () => ipcRenderer.invoke('as:videolab-cancel'),
   aiTools: () => ipcRenderer.invoke('as:ai-tools'),
   labPreview: (name, data, time, model, scale) => ipcRenderer.invoke('as:videolab-preview', { name, data, time, model, scale }),
+  ofxScan: force => ipcRenderer.invoke('as:ofx-scan', { force }),
+  ofxAddDir: () => ipcRenderer.invoke('as:ofx-add-dir'),
+  ofxOpenDir: () => ipcRenderer.invoke('as:ofx-open-dir'),
+  ofxRender: req => ipcRenderer.invoke('as:ofx-render', req),
   onLabProgress: cb => {
     const h = (_e, p) => cb(p)
     ipcRenderer.on('as:videolab-progress', h)

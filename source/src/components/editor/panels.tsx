@@ -2,6 +2,7 @@
 /**
  * ANIME STUDIO — Panels: Assets, Effects, Plugins, Text, Color, Composition, Projects, Feature Status
  */
+import { OfxSection } from './OfxSection'
 import { useEffect, useRef, useState } from 'react'
 import type { AssetMeta, VideoClip, AudioClip, TextClip } from '@/lib/engine/types'
 import { uid, makeClipBase } from '@/lib/engine/types'
@@ -392,6 +393,7 @@ export function PluginsPanel() {
 
   return (
     <div className="p-3 pb-10">
+      <OfxSection />
       <SectionTitle right={<span className="text-[10px] text-zinc-500">{pluginEffectCount} plugin effects</span>}>
         <Puzzle size={11} className="inline mr-1 text-violet-400" /> Installed plugins
       </SectionTitle>

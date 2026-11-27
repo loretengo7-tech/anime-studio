@@ -22,6 +22,7 @@ import { layerHomography, type CamState } from './camera'
 import { getSolidCanvas, getShapeCanvas } from './proceduralSources'
 import { FxChain } from './fxpack'
 import { matteAt } from './cutout'
+import { clipHasOfx, ofxLayerSource } from './ofx'
 
 export type TextureSource = HTMLVideoElement | HTMLImageElement | ImageBitmap | HTMLCanvasElement
 
@@ -1930,6 +1931,8 @@ export class Compositor {
         const effLocal = pt ? Math.floor(localTime * Math.max(1, pt.params.fps ?? 12)) / Math.max(1, pt.params.fps ?? 12) : localTime
         const st = clipSourceTime(vc, effLocal)
         src = provider.get(vc, st)
+        // OpenFX plug-ins (desktop): the processed frame replaces the layer source
+        if (src && !opts.bypassEffects && clipHasOfx(clip)) src = ofxLayerSource(clip, src as CanvasImageSource, localTime, st) as TextureSource
         if (src) [srcW, srcH] = sourceSize(src)
         else {
           // FIX (flicker): while an element re-buffers / seeks (readyState < 2)
@@ -1941,6 +1944,7 @@ export class Compositor {
       } else if (clip.kind === 'image') {
         // Real image layers: full transform/opacity/blend/keyframes/mask/effects pipeline
         src = provider.get(clip as ImageClip, 0)
+        if (src && !opts.bypassEffects && clipHasOfx(clip)) src = ofxLayerSource(clip, src as CanvasImageSource, localTime, 0) as TextureSource
         if (src) [srcW, srcH] = sourceSize(src)
       } else if (clip.kind === 'text') {
         src = provider.getTextCanvas(clip as TextClip, localTime, comp.fps)
