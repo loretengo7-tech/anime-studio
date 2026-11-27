@@ -461,18 +461,24 @@ class PlaybackEngine {
 
   /** Public so the realtime export can drive the shared video elements itself. */
   driveMedia(doc: ProjectDoc, time: number, playing: boolean) {
+    const driven = new Set<string>()
     for (const track of doc.tracks) {
       if (track.kind !== 'video') continue
       for (const clip of doc.clips) {
         if (clip.trackId !== track.id || clip.kind !== 'video') continue
         const vc = clip as VideoClip
+        // clips sharing a decoder (duplicates / cut-out copy): drive it once
+        const dk = `${vc.assetId}|${mediaManager.decoderKey(vc)}`
+        if (driven.has(dk)) continue
         const active = time >= vc.start - 0.03 && time < vc.start + vc.duration
         const el = mediaManager.getElement(vc)
         if (!el) continue
         if (!active) {
-          if (!el.paused) el.pause()
+          // only pause a shared decoder if no other active clip uses it
+          if (!el.paused && !doc.clips.some(o => o !== vc && o.kind === 'video' && (o as VideoClip).assetId === vc.assetId && mediaManager.decoderKey(o as VideoClip) === mediaManager.decoderKey(vc) && time >= o.start - 0.03 && time < o.start + o.duration)) el.pause()
           continue
         }
+        driven.add(dk)
         const local = time - vc.start
         const rawSrc = clipSourceTime(vc, local)
         // never ask for a time past the source's end (hold the last frame, AE-style)

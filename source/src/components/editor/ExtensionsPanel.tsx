@@ -53,11 +53,11 @@ export function ExtensionsPanel() {
     <div className="p-3 text-[12px] space-y-3">
       <div className="flex items-center gap-2 text-zinc-200 font-semibold"><Puzzle size={14} className="text-amber-400" /> Extensions &amp; Scripts</div>
       <p className="text-zinc-500 text-[11px] leading-4">
-        Install After Effects panels (<b>.zxp</b>, <b>.zip</b>) and scripts (<b>.jsx</b>). They run on AnimeStudio&apos;s After Effects scripting layer: layers, transform keyframes, easing (KeyframeEase), expressions, effects and ScriptUI panels.
+        Install After Effects panels (<b>.zxp</b>, <b>.zip</b>) and scripts (<b>.jsx</b>, <b>.js</b>, <b>.jsxinc</b>, zips of scripts with <code>#include</code>). Animation presets (<b>.ffx</b>) apply to the selected layer. They run on AnimeStudio&apos;s After Effects scripting layer: layers, transform keyframes, easing (KeyframeEase), expressions, effects and ScriptUI panels.
       </p>
       <div className="grid grid-cols-2 gap-2">
-        <button className="gbtn gbtn-accent h-8 flex items-center justify-center gap-1.5" disabled={busy} onClick={() => pick('.zxp,.zip,.jsx,.js,.jsxbin', doInstall)}><Upload size={13} /> Install…</button>
-        <button className="gbtn h-8 flex items-center justify-center gap-1.5" onClick={() => pick('.jsx,.js', f => void runScriptFile(f))}><Play size={13} /> Run script once…</button>
+        <button className="gbtn gbtn-accent h-8 flex items-center justify-center gap-1.5" disabled={busy} onClick={() => pick('.zxp,.zip,.jsx,.js,.jsxinc,.jsxbin', doInstall)}><Upload size={13} /> Install…</button>
+        <button className="gbtn h-8 flex items-center justify-center gap-1.5" onClick={() => pick('.jsx,.js,.jsxinc,.jsxbin,.ffx,.zip,.zxp', f => void runScriptFile(f))}><Play size={13} /> Run script once…</button>
       </div>
       {list.length === 0 && <div className="text-zinc-600 text-[11px] py-4 text-center">No extensions installed yet.</div>}
       {list.map(e => (
@@ -94,7 +94,32 @@ export function ExtensionsPanel() {
 /** File > Scripts > Run Script File… (AE): run a .jsx once; ScriptUI windows float. */
 export async function runScriptFile(file: File) {
   const toast = useEditorStore.getState().toast
+  if (/\.(ffx|aspreset)$/i.test(file.name)) {
+    try {
+      const { installPresetFiles, applyPreset } = await import('@/lib/extensions/ffx')
+      const [e] = await installPresetFiles([file])
+      const st = useEditorStore.getState()
+      const hasSel = st.selectedClipIds.length > 0 || !!st.selectedClipId
+      if (hasSel && (e.effects.length || e.payload)) applyPreset(e)
+      const fxNames = e.effects.map(t => t.replace(/_/g, ' ')).join(', ')
+      toast({
+        kind: e.effects.length || e.payload ? 'success' : 'error',
+        title: hasSel ? `Applied preset ${e.name}` : `Installed preset ${e.name}`,
+        detail: [hasSel ? '' : 'Find it in Effects & Presets › Animation Presets (double-click to apply)', fxNames ? `Effects: ${fxNames}` : '', e.unsupported.length ? `Not available here: ${e.unsupported.slice(0, 6).join(', ')}` : ''].filter(Boolean).join(' · '),
+      })
+    } catch (err) { toast({ kind: 'error', title: `Preset error — ${file.name}`, detail: err instanceof Error ? err.message : String(err) }) }
+    return
+  }
+  if (/\.(zip|zxp)$/i.test(file.name)) {
+    try { const ext = await useExtStore.getState().install(file); toast({ kind: 'success', title: `Installed ${ext.name}`, detail: 'Find it in Window › Extensions' }) }
+    catch (err) { toast({ kind: 'error', title: `Install failed — ${file.name}`, detail: err instanceof Error ? err.message : String(err) }) }
+    return
+  }
   const code = await file.text()
+  if (/@JSXBIN@ES@/.test(code.slice(0, 4096))) {
+    toast({ kind: 'error', title: `${file.name} is compiled ExtendScript (.jsxbin)`, detail: 'It is encrypted bytecode only Adobe\'s engine can run — use the .jsx version or the .zxp panel.' })
+    return
+  }
   const fake: InstalledExt = { id: `run.${file.name}`, kind: 'script', name: file.name, version: '', panels: [], scriptPath: null, files: {}, installedAt: 0 }
   const eng = createEngine({
     log: m => console.info(`[${file.name}]`, m),

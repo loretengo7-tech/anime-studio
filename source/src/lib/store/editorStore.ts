@@ -367,6 +367,8 @@ export const useEditorStore = create<EditorStore>((set, get) => {
         ok = false
       }
       // IndexedDB autosave (durable, bigger quota) — failures are surfaced, never silent
+      // project library (Home → Recent projects): every project kept on its own
+      void import('./projectLibrary').then(m => m.saveToLibrary(doc)).catch(() => { })
       void writeAutosave({ ...doc, aiHistory: doc.aiHistory.slice(-40) })
         .then(() => {
           if (ok) set({ saveState: 'saved' })

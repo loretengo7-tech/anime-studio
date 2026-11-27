@@ -207,6 +207,8 @@ interface ClipBase {
   shy?: boolean
   /** AE label color index (see LABEL_COLORS). */
   label?: number
+  /** Shares the decoder of another clip on the same footage (AI cut-out "text behind" copy) — always frame-identical, no second decode. */
+  mediaLink?: string
   /** AE motion blur switch (needs the comp's motion blur enabled too). */
   motionBlur?: boolean
   /**
@@ -403,6 +405,8 @@ export interface AssetMeta {
   height: number
   fps: number
   size: number
+  /** Offline footage (e.g. from an imported After Effects project): original file path. Relinked by file name on import. */
+  missingPath?: string
   /** Downscaled thumbnails (data URLs) for timeline clips. */
   thumbnails?: string[]
   /** Audio peaks for waveform rendering, normalized -1..1. */

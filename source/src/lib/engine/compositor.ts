@@ -60,10 +60,11 @@ attribute vec2 a_pos;   // unit quad corners (-1..1)
 attribute vec2 a_uv;
 uniform mat3 u_matrix;  // layer model-projection matrix (affine, or homography for 3D layers)
 uniform float u_flipY;
+uniform vec2 u_expand;  // motion blur: grow the quad (uv units) so the smear can leave the layer bounds
 varying vec2 v_uv;
 void main() {
-  v_uv = a_uv;
-  vec3 p = u_matrix * vec3(a_pos, 1.0);
+  v_uv = (a_uv - 0.5) * (1.0 + 2.0 * u_expand) + 0.5;
+  vec3 p = u_matrix * vec3(a_pos * (1.0 + 2.0 * u_expand), 1.0);
   // For 2D layers p.z == 1 (affine mat3). For 3D layers u_matrix is a full
   // homography: using p.z as gl_Position.w gives perspective-correct UV
   // interpolation across the warped quad.
@@ -99,6 +100,7 @@ uniform float u_vigAmount, u_vigSoft;
 uniform float u_blurRadius;
 uniform vec2 u_blurDir;
 uniform vec2 u_motionVec;
+uniform vec2 u_expand;
 uniform float u_zoomBlur;
 uniform float u_radialBlur;
 
@@ -127,6 +129,7 @@ uniform float u_trailsDecay;
 uniform float u_maskEnabled, u_maskType, u_maskX, u_maskY, u_maskW, u_maskH, u_maskFeather, u_maskInvert;
 // pen mask: flattened closed polygon in layer-uv aspect space (CPU-side bezier flatten)
 uniform vec2 u_maskPts[24];
+uniform sampler2D u_maskTex; // pen masks rendered on the CPU (any number of points, exact curves)
 uniform float u_maskPtsN;
 uniform float u_maskAspect;
 
@@ -407,6 +410,8 @@ void main() {
     vec4 tB = texture2D(u_tex, uv - splitOff);
     col = vec3(tR.r, tG.g, tB.b);
     texA = (tR.a + tG.a + tB.a) / 3.0;
+    // grown quad (motion blur): nothing exists outside the layer itself
+    if (u_expand.x + u_expand.y > 0.0 && (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)) { col = vec3(0.0); texA = 0.0; }
   } else {
     col = vec3(0.0);
     texA = 0.0;
@@ -455,7 +460,21 @@ void main() {
     float blurAmt = max(u_blurRadius, 0.0);
     vec2 dir = u_blurDir + u_motionVec;
     float dirLen = length(dir);
-    if (blurAmt > 0.5 || dirLen > 0.5) {
+    if (length(u_motionVec) > 0.5) {
+      // MOTION BLUR (shutter): 24 evenly spaced samples along the movement,
+      // alpha-weighted so the layer's edges smear too (was 12 sparse taps →
+      // visible copies of the layer instead of a blur)
+      vec4 macc = vec4(0.0);
+      for (int i = 0; i < 24; i++) {
+        float tt = (float(i) + 0.5) / 24.0 * 2.0 - 1.0;
+        vec2 suv = uv + dir * tt * px;
+        vec4 sm = texture2D(u_tex, suv);
+        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) sm = vec4(0.0);
+        macc += vec4(sm.rgb * sm.a, sm.a);
+      }
+      texA = macc.a / 24.0;
+      if (macc.a > 0.0001) col = macc.rgb / macc.a;
+    } else if (blurAmt > 0.5 || dirLen > 0.5) {
       vec3 acc = col;
       float wsum = 1.0;
       for (int i = 1; i <= 6; i++) {
@@ -904,7 +923,12 @@ void main() {
   if (u_efEnabled > 0.5 && u_maskEnabled > 0.5) {
     float aspect = res.x / max(res.y, 1.0);
     float d;
-    if (u_maskType > 1.5) {
+    if (u_maskType > 2.5) {
+      // pen mask as a texture: exact bezier path + real feather, unlimited points
+      float mt = texture2D(u_maskTex, clamp(uv, vec2(0.0), vec2(1.0))).r;
+      if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) mt = 0.0;
+      d = 0.5 - mt; // remapped below
+    } else if (u_maskType > 1.5) {
       // pen (bezier flattened to polygon on CPU, points in layer-uv aspect space)
       vec2 pp = vec2(uv.x * max(u_maskAspect, 0.01), uv.y);
       d = asSdPolygon(pp, max(u_maskPtsN, 3.0));
@@ -921,7 +945,7 @@ void main() {
       }
     }
     float aa = max(u_maskFeather, 0.001);
-    float m = 1.0 - smoothstep(-aa, aa, d);
+    float m = u_maskType > 2.5 ? clamp(0.5 - d, 0.0, 1.0) : 1.0 - smoothstep(-aa, aa, d);
     if (u_maskInvert > 0.5) m = 1.0 - m;
     alpha *= m;
   }
@@ -1358,6 +1382,44 @@ export class Compositor {
   private prog!: WebGLProgram
   private blitProg!: WebGLProgram
   private quadVBO: WebGLBuffer | null = null
+  private penMaskTex: WebGLTexture | null = null
+  private penMasks = new Map<string, { canvas: HTMLCanvasElement; tex: WebGLTexture; sig: string }>()
+  /** Pen mask → alpha texture: exact bezier curves, any number of points, real feather. */
+  private renderPenMask(clipId: string, pts: { x: number; y: number; hIn?: { x: number; y: number }; hOut?: { x: number; y: number } }[], toUv: (x: number, y: number) => number[], srcW: number, srcH: number, feather: number): WebGLTexture | null {
+    const gl = this.gl!
+    const k = Math.min(1, 1024 / Math.max(srcW, srcH))
+    const W = Math.max(16, Math.round(srcW * k)), H = Math.max(16, Math.round(srcH * k))
+    const uvPts = pts.map(p => ({ p: toUv(p.x, p.y), i: toUv(p.x + (p.hIn?.x ?? 0), p.y + (p.hIn?.y ?? 0)), o: toUv(p.x + (p.hOut?.x ?? 0), p.y + (p.hOut?.y ?? 0)) }))
+    const sig = `${W}x${H}|${feather.toFixed(4)}|` + uvPts.map(q => q.p.concat(q.i, q.o).map(v => v.toFixed(4)).join(',')).join(';')
+    let e = this.penMasks.get(clipId)
+    if (e && e.sig === sig) return e.tex
+    if (!e) { const c = document.createElement('canvas'); e = { canvas: c, tex: gl.createTexture()!, sig: '' }; this.penMasks.set(clipId, e) }
+    const c = e.canvas
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H }
+    const g = c.getContext('2d')!
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.filter = 'none'
+    g.fillStyle = '#000'; g.fillRect(0, 0, W, H)
+    const blur = Math.max(0, feather) * H * 0.5
+    g.filter = blur > 0.3 ? `blur(${blur.toFixed(2)}px)` : 'none'
+    g.fillStyle = '#fff'
+    g.beginPath()
+    const X = (v: number[]) => v[0] * W, Y = (v: number[]) => v[1] * H
+    g.moveTo(X(uvPts[0].p), Y(uvPts[0].p))
+    for (let i = 0; i < uvPts.length; i++) {
+      const a = uvPts[i], b = uvPts[(i + 1) % uvPts.length]
+      g.bezierCurveTo(X(a.o), Y(a.o), X(b.i), Y(b.i), X(b.p), Y(b.p))
+    }
+    g.closePath(); g.fill()
+    gl.bindTexture(gl.TEXTURE_2D, e.tex)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    e.sig = sig
+    return e.tex
+  }
   private uniformLocs: Record<string, WebGLUniformLocation | null> = {}
   private blitLocs: Record<string, WebGLUniformLocation | null> = {}
   private pp: PingPong[] = []
@@ -1612,6 +1674,13 @@ export class Compositor {
       // paused, when its currentTime moved (seek / scrub). Still images and
       // canvases (text, procedural) are uploaded as before.
       if (isVideo && !this.videoNeedsUpload(key, src as HTMLVideoElement)) return entry
+      // versioned canvases (text): re-upload only when the drawing changed
+      const ver = (src as { __asVer?: number }).__asVer
+      if (ver !== undefined) {
+        const e2 = entry as { ver?: number }
+        if (e2.ver === ver) return entry
+        e2.ver = ver
+      }
       try {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src as TexImageSource)
         if (isVideo) this.markUploaded(key, src as HTMLVideoElement)
@@ -1922,7 +1991,9 @@ export class Compositor {
         const mvx = (lx / (fw * sc)) * rw, mvy = (ly / (fh * sc)) * rh
         const ml = Math.hypot(mvx, mvy)
         const cap = 90
-        if (ml > 0.6) u.motionVec = [mvx * Math.min(1, cap / ml), mvy * Math.min(1, cap / ml)]
+        const mcap = 220
+        if (ml > 0.6) u.motionVec = [mvx * Math.min(1, mcap / ml), mvy * Math.min(1, mcap / ml)]
+        void cap
         const zr = Math.abs(vs) * shutter / sc
         if (zr > 0.002) u.zoomBlur = Math.max(u.zoomBlur, Math.min(0.6, zr / 1.5))
         const dth = Math.abs(vr) * shutter * Math.PI / 180
@@ -2000,29 +2071,24 @@ export class Compositor {
       // layer-uv aspect space so the mask sticks to the layer (AE layer-mask semantics)
       if (clip.mask?.shape === 'pen' && src && srcW > 0) {
         const pts = evalMaskPoints(clip.mask, localTime)
-        const poly = flattenPenPath(pts)
-        if (poly.length >= 3) {
-          const laspect = srcW / Math.max(1, srcH)
+        if (pts.length >= 3) {
+          // map comp-space vertices + handles into layer uv (0..1, y-down)
           const inv = mat3Inverse(m)
-          const flat: number[] = []
-          for (const p of poly) {
-            const cx = (p.x / comp.width) * 2
-            const cy = (p.y / comp.height) * 2
+          const toUv = (x: number, y: number) => {
+            const cx = (x / comp.width) * 2, cy = (y / comp.height) * 2
             const wx = inv[0] * cx + inv[3] * cy + inv[6]
             const wy = inv[1] * cx + inv[4] * cy + inv[7]
-            // quad uv has y=0 at NDC top; comp-space pen points are y-up, so the
-            // mask polygon must be mirrored into that uv convention to land where
-            // the user drew it on screen.
-            flat.push((wx * 0.5 + 0.5) * laspect, 0.5 - wy * 0.5)
+            return [wx * 0.5 + 0.5, 0.5 - wy * 0.5]
           }
-          u.maskPts = flat
-          u.maskPtsN = Math.min(24, poly.length)
-          u.maskAspect = laspect
+          this.penMaskTex = this.renderPenMask(clip.id, pts, toUv, srcW, srcH, clip.mask.feather)
+          u.maskType = 3
+          u.maskPtsN = 0
         } else {
           u.maskPtsN = 0
         }
       } else {
         u.maskPtsN = 0
+        this.penMaskTex = null
       }
 
       // NOTE (orientation): layer matrices are intentionally NOT flipped here.
@@ -2106,7 +2172,14 @@ export class Compositor {
       this.setUniforms(u, time, localTime, rw, rh, efOn)
       gl.uniform1f(this.loc('u_srcFlip'), 0) // reset — adjustment pass sets it to 1
       gl.uniformMatrix3fv(this.loc('u_matrix'), false, new Float32Array(m))
+      gl.activeTexture(gl.TEXTURE5)
+      gl.bindTexture(gl.TEXTURE_2D, (u.maskType === 3 && this.penMaskTex) ? this.penMaskTex : this.dummyTex)
+      gl.uniform1i(this.loc('u_maskTex'), 5)
+      const mvLen = Math.hypot(u.motionVec[0], u.motionVec[1])
+      const ex = mvLen > 0.5 ? [Math.min(0.5, Math.abs(u.motionVec[0]) / rw + 0.002), Math.min(0.5, Math.abs(u.motionVec[1]) / rh + 0.002)] : [0, 0]
+      gl.uniform2f(this.loc('u_expand'), ex[0], ex[1])
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      if (ex[0] || ex[1]) gl.uniform2f(this.loc('u_expand'), 0, 0)
       this.ppIndex = 1 - this.ppIndex
       // restore matte sampler to dummy so later layers don't reuse it
       if (matteMode > 0) {

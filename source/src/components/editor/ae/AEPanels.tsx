@@ -44,6 +44,7 @@ export function ProjectPanel() {
   const toast = useEditorStore(s => s.toast)
   const setDialog = useUIStore(s => s.setDialog)
   const [sel, setSel] = useState<string | null>(null)
+  const [multi, setMulti] = useState<string[]>([])
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [dropping, setDropping] = useState(false)
@@ -53,12 +54,33 @@ export function ProjectPanel() {
   const list = doc.assets.filter(a => !q || a.name.toLowerCase().includes(q.toLowerCase()))
   const usedCount = (a: AssetMeta) => doc.clips.filter(c => (c as VideoClip).assetId === a.id).length
 
-  const removeAsset = (a: AssetMeta) => {
-    if (usedCount(a) > 0) { toast({ kind: 'error', title: 'Footage is used in the composition', detail: 'Delete its layers first' }); return }
-    mutate(d => { d.assets = d.assets.filter(x => x.id !== a.id) })
-    mediaManager.removeAsset(a.id)
-    if (STATIC_MODE) void deleteLocalFile(a.id)
-    setSel(null)
+  /** AE-style delete: footage used in the comp asks first, then removes its layers too. */
+  const removeItems = (ids: string[]) => {
+    const assets = doc.assets.filter(a => ids.includes(a.id))
+    const comps = (doc.precomps ?? []).filter(p => ids.includes(p.id) && p.id !== 'main' && p.id !== doc.compId)
+    if (!assets.length && !comps.length) return
+    const layerCount = doc.clips.filter(c => assets.some(a => (c as VideoClip).assetId === a.id) || comps.some(p => (c as { precompId?: string }).precompId === p.id)).length
+    const what = `${assets.length + comps.length} item${assets.length + comps.length > 1 ? 's' : ''}`
+    if (layerCount > 0 && !window.confirm(`Delete ${what}? ${layerCount} layer${layerCount > 1 ? 's' : ''} using ${assets.length + comps.length > 1 ? 'them' : 'it'} will be removed from the composition too.`)) return
+    mutate(d => {
+      d.clips = d.clips.filter(c => !assets.some(a => (c as VideoClip).assetId === a.id) && !comps.some(p => (c as { precompId?: string }).precompId === p.id))
+      d.assets = d.assets.filter(x => !assets.some(a => a.id === x.id))
+      if (d.precomps) d.precomps = d.precomps.filter(p => !comps.some(c => c.id === p.id))
+    }, 'Delete footage')
+    for (const a of assets) { mediaManager.removeAsset(a.id); if (STATIC_MODE) void deleteLocalFile(a.id) }
+    setSel(null); setMulti([])
+  }
+  const removeAsset = (a: AssetMeta) => removeItems([a.id])
+  const selIds = multi.length ? multi : sel ? [sel] : []
+  const pick = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (e.ctrlKey || e.metaKey) { const cur = new Set(selIds); cur.has(id) ? cur.delete(id) : cur.add(id); const arr = [...cur]; setMulti(arr); setSel(arr[arr.length - 1] ?? null); return }
+    if (e.shiftKey && sel) {
+      const order = [...(doc.precomps ?? []).filter(p => p.id !== 'main').map(p => p.id), ...list.map(a => a.id)]
+      const a = order.indexOf(sel), b = order.indexOf(id)
+      if (a >= 0 && b >= 0) { setMulti(order.slice(Math.min(a, b), Math.max(a, b) + 1)); return }
+    }
+    setMulti([]); setSel(id)
   }
 
   const makeProxy = async (a: AssetMeta) => {
@@ -77,7 +99,14 @@ export function ProjectPanel() {
 
   return (
     <div
-      className="flex flex-col h-full min-h-0 text-[12px]"
+      className="flex flex-col h-full min-h-0 text-[12px] outline-none"
+      tabIndex={0}
+      onKeyDown={e => {
+        const tag = (e.target as HTMLElement).tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        if ((e.key === 'Delete' || e.key === 'Backspace') && selIds.length) { e.preventDefault(); e.stopPropagation(); removeItems(selIds) }
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') { e.preventDefault(); e.stopPropagation(); setMulti(list.map(a => a.id)) }
+      }}
       onDragOver={e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDropping(true) } }}
       onDragLeave={() => setDropping(false)}
       onDrop={e => { e.preventDefault(); setDropping(false); void importFiles(e.dataTransfer.files, setBusy) }}
@@ -123,7 +152,7 @@ export function ProjectPanel() {
         <span className="w-16 text-right">Duration</span>
       </div>
 
-      <div className={`flex-1 min-h-0 overflow-auto as-scroll ${dropping ? 'outline outline-2 -outline-offset-2 outline-amber-500' : ''}`} onClick={() => setSel(null)}>
+      <div className={`flex-1 min-h-0 overflow-auto as-scroll ${dropping ? 'outline outline-2 -outline-offset-2 outline-amber-500' : ''}`} onClick={() => { setSel(null); setMulti([]) }}>
         {/* the composition itself, like AE's comp item */}
         <div className="flex items-center gap-2 px-2 h-[22px] text-zinc-200 hover:bg-[#2c2c2c]" onDoubleClick={() => setDialog('comp')} title="Double-click: Composition Settings">
           <Clapperboard size={13} className="text-zinc-400 shrink-0" />
@@ -135,8 +164,9 @@ export function ProjectPanel() {
         {(doc.precomps ?? []).filter(p => p.id !== 'main').map(pc => (
           <div key={pc.id} draggable
             onDragStart={e => { e.dataTransfer.setData('application/x-as-comp', pc.id); e.dataTransfer.effectAllowed = 'copy' }}
-            className="flex items-center gap-2 px-2 h-[22px] text-zinc-200 hover:bg-[#2c2c2c] cursor-default"
-            onDoubleClick={() => openComp(pc.id)} title="Double-click to open · drag to the timeline to nest">
+            className={`flex items-center gap-2 px-2 h-[22px] cursor-default ${selIds.includes(pc.id) ? 'bg-[#3d4b5c] text-white' : 'text-zinc-200 hover:bg-[#2c2c2c]'}`}
+            onClick={e => pick(pc.id, e)}
+            onDoubleClick={() => openComp(pc.id)} title="Double-click to open · drag to the timeline to nest · Delete to remove">
             <Clapperboard size={13} className="text-zinc-400 shrink-0" />
             <span className="flex-1 truncate">{pc.name}</span>
             <span className="w-4 h-3 rounded-[1px]" style={{ background: LABEL_COLORS[15].color }} />
@@ -155,10 +185,10 @@ export function ProjectPanel() {
             key={a.id}
             draggable
             onDragStart={e => { e.dataTransfer.setData('application/x-as-asset', a.id); e.dataTransfer.effectAllowed = 'copy' }}
-            className={`flex items-center gap-2 px-2 h-[22px] cursor-default ${sel === a.id ? 'bg-[#3d4b5c] text-white' : 'text-zinc-300 hover:bg-[#2c2c2c]'}`}
-            onClick={e => { e.stopPropagation(); setSel(a.id) }}
+            className={`flex items-center gap-2 px-2 h-[22px] cursor-default ${selIds.includes(a.id) ? 'bg-[#3d4b5c] text-white' : 'text-zinc-300 hover:bg-[#2c2c2c]'}`}
+            onClick={e => pick(a.id, e)}
             onDoubleClick={() => addAssetLayer(a)}
-            title="Double-click or drag to the timeline to add a layer"
+            title="Double-click or drag to the timeline to add a layer · Delete to remove"
           >
             {a.kind === 'video' ? <Film size={13} className="text-zinc-400 shrink-0" /> : a.kind === 'audio' ? <Music size={13} className="text-zinc-400 shrink-0" /> : <ImageIcon size={13} className="text-zinc-400 shrink-0" />}
             <span className="flex-1 truncate">{a.name}</span>
@@ -188,7 +218,7 @@ export function ProjectPanel() {
         <button className="tb-btn !w-7 !h-6" title="Add to Composition" disabled={!asset} onClick={() => asset && addAssetLayer(asset)}><Clapperboard size={13} /></button>
         <div className="flex-1" />
         <span className="text-[10px] text-zinc-600 mr-1">{STATIC_MODE ? 'stored on device' : ''}</span>
-        <button className="tb-btn !w-7 !h-6" title="Delete" disabled={!asset} onClick={() => asset && removeAsset(asset)}><Trash2 size={13} /></button>
+        <button className="tb-btn !w-7 !h-6" title="Delete selected (Delete)" disabled={!selIds.length} onClick={() => removeItems(selIds)}><Trash2 size={13} /></button>
       </div>
     </div>
   )
@@ -242,6 +272,16 @@ export function EffectsPresetsPanel() {
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-auto as-scroll pb-2">
+        {(!query || 'twixtor time warp slow motion rife'.includes(query)) && (
+          <div className="flex items-center gap-1.5 pl-[22px] pr-2 h-[22px] text-zinc-200 hover:bg-[#2c2c2c] cursor-default"
+            onDoubleClick={() => useEditorStore.getState().setPanel('speed')} onClick={() => useEditorStore.getState().setPanel('speed')}
+            title="Twixtor-style time warp: speed curves + real in-between frames (RIFE neural on desktop)">
+            <span className="w-4 h-4 rounded-[3px] bg-amber-500/80 text-black text-[9px] font-bold flex items-center justify-center">TW</span>
+            <span className="flex-1 truncate">Time Warp (Twixtor-style)</span>
+            <span className="text-[10px] text-amber-400/80">RIFE</span>
+          </div>
+        )}
+        <AnimationPresetsSection query={query} />
         {groups.map(([cat, items]) => {
           const shown = query ? items.filter(d => d.name.toLowerCase().includes(query) || d.description.toLowerCase().includes(query)) : items
           if (query && shown.length === 0) return null
@@ -271,6 +311,76 @@ export function EffectsPresetsPanel() {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+/** Effects & Presets › Animation Presets: installed .ffx (After Effects) and saved AnimeStudio presets. */
+function AnimationPresetsSection({ query }: { query: string }) {
+  const toast = useEditorStore(s => s.toast)
+  const [list, setList] = useState<import('@/lib/extensions/ffx').PresetEntry[]>([])
+  const [open, setOpen] = useState(true)
+  const [menu, setMenu] = useState<{ x: number; y: number; id: string } | null>(null)
+  useEffect(() => {
+    let off = () => { }
+    void import('@/lib/extensions/ffx').then(m => { const load = () => void m.listPresets().then(setList); load(); off = m.onPresetsChange(load) })
+    return () => off()
+  }, [])
+  const install = () => {
+    const i = document.createElement('input'); i.type = 'file'; i.multiple = true; i.accept = '.ffx,.aspreset'
+    i.onchange = async () => {
+      if (!i.files?.length) return
+      try {
+        const m = await import('@/lib/extensions/ffx')
+        const r = await m.installPresetFiles(Array.from(i.files))
+        toast({ kind: 'success', title: `Installed ${r.length} preset${r.length > 1 ? 's' : ''}`, detail: 'Double-click one to apply it to the selected layer' })
+      } catch (e) { toast({ kind: 'error', title: 'Preset install failed', detail: e instanceof Error ? e.message : String(e) }) }
+    }
+    i.click()
+  }
+  const apply = async (id: string) => {
+    const m = await import('@/lib/extensions/ffx')
+    const e = list.find(x => x.id === id)
+    if (!e) return
+    try {
+      const n = m.applyPreset(e)
+      toast({ kind: 'success', title: `${e.name} applied to ${n} layer${n > 1 ? 's' : ''}`, detail: e.unsupported.length ? `Not available here: ${e.unsupported.slice(0, 6).join(', ')}` : undefined })
+    } catch (err) { toast({ kind: 'error', title: err instanceof Error ? err.message : String(err) }) }
+  }
+  const shown = query ? list.filter(p => p.name.toLowerCase().includes(query)) : list
+  if (query && !shown.length && !'animation presets ffx'.includes(query)) return null
+  return (
+    <div>
+      <div className="w-full flex items-center gap-1 h-[21px] px-1 text-zinc-300 hover:bg-[#2c2c2c]">
+        <button className="flex-1 flex items-center gap-1 min-w-0" onClick={() => setOpen(o => !o)}>
+          {open || query ? <ChevronDown size={12} className="text-zinc-500" /> : <ChevronRight size={12} className="text-zinc-500" />}
+          <span className="truncate">Animation Presets</span>
+          <span className="text-[10px] text-zinc-500 ml-1">{list.length || ''}</span>
+        </button>
+        <button className="text-[10px] text-sky-400 hover:text-sky-300 px-1" onClick={install} title="Install After Effects presets (.ffx) or AnimeStudio presets (.aspreset)">+ Install .ffx</button>
+      </div>
+      {(open || query) && (shown.length ? shown.map(p => (
+        <div key={p.id}
+          onDoubleClick={() => void apply(p.id)}
+          onClick={e => { if ((e.nativeEvent as PointerEvent).pointerType === 'touch') void apply(p.id) }}
+          onContextMenu={e => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, id: p.id }) }}
+          className="flex items-center gap-1.5 h-[21px] pl-6 pr-2 text-zinc-300 hover:bg-[#3d4b5c] hover:text-white cursor-default"
+          title={`${p.source === 'ffx' ? 'After Effects preset' : 'AnimeStudio preset'}${p.effects.length ? `\nEffects: ${p.effects.join(', ')}` : ''}${p.unsupported.length ? `\nNot available: ${p.unsupported.join(', ')}` : ''}\nDouble-click to apply · right-click for options`}>
+          <span className={`text-[9px] font-bold px-[3px] rounded-[2px] leading-[13px] ${p.source === 'ffx' ? 'bg-[#2d6b9a] text-white' : 'bg-[#8a6b2d] text-white'}`}>{p.source === 'ffx' ? 'ffx' : 'AS'}</span>
+          <span className="truncate">{p.name}</span>
+          {p.source === 'ffx' && p.unsupported.length > 0 && <span className="ml-auto text-[9px] text-zinc-500">{p.effects.length}/{p.effects.length + p.unsupported.length}</span>}
+        </div>
+      )) : <div className="pl-6 pr-2 py-1 text-[11px] text-zinc-500 leading-4">Install .ffx presets from After Effects, or save one from a layer with Animation › Save Animation Preset…</div>)}
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-[300]" onPointerDown={() => setMenu(null)} onContextMenu={e => { e.preventDefault(); setMenu(null) }} />
+          <div className="ae-menu z-[301]" style={{ position: 'fixed', left: menu.x, top: menu.y, minWidth: 190 }}>
+            <button className="ae-menu-item" onClick={() => { void apply(menu.id); setMenu(null) }}>Apply to Selected Layers</button>
+            {list.find(x => x.id === menu.id)?.source === 'native' && <button className="ae-menu-item" onClick={() => { const e = list.find(x => x.id === menu.id); if (e) void import('@/lib/extensions/ffx').then(m => m.downloadPreset(e)); setMenu(null) }}>Export .aspreset…</button>}
+            <button className="ae-menu-item" onClick={() => { void import('@/lib/extensions/ffx').then(m => m.removePreset(menu.id)); setMenu(null) }}>Remove Preset</button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

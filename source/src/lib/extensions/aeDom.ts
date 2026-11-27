@@ -528,11 +528,8 @@ export class AEPropertyGroup {
   }
 }
 
-/** AE matchNames scripts use → our effect types (Expression Controls + a few natives). */
-const MATCH_TO_TYPE: Record<string, string> = {
-  'ADBE Slider Control': 'slider_control', 'ADBE Checkbox Control': 'checkbox_control', 'ADBE Angle Control': 'angle_control',
-  'ADBE Gaussian Blur 2': 'gaussian_blur', 'ADBE Glo2': 'glow', 'ADBE Fill': 'fill', 'ADBE Tint': 'tint',
-}
+import { MATCH_TO_TYPE } from './matchNames'
+export { MATCH_TO_TYPE }
 function addEffectByMatchName(group: AEPropertyGroup, matchName: string) {
   const layer = group.parentProperty as AELayer
   const c = wClip(layer.clipId)

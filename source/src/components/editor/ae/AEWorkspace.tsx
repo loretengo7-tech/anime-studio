@@ -22,6 +22,7 @@ import { Inspector } from '../Inspector'
 import { downloadProjectFile } from '@/lib/media/projectFile'
 import { AETimeline } from './AETimeline'
 import { VideoLab } from '../VideoLab'
+import { HomeScreen, homeOnStart, newProjectFromHome } from '../HomeScreen'
 import { ExtensionsPanel, ExtensionView, ExtensionFloatingWindows, runScriptFile, useExtensionsLoaded } from '../ExtensionsPanel'
 import { useExtStore } from '@/lib/extensions/store'
 import {
@@ -33,6 +34,7 @@ import {
   setSelectedKeyEasing, deleteSelectedKeyframe, setWorkArea, clearWorkArea, layerToCTI, trimCompToWorkArea,
   saveFrameAs, pickAndImport, patchClip, copySelection, pasteClipboard, selectAllLayers, deleteSelectedLayers,
   duplicateSelectedLayers, precomposeSelected, closeComp, selectedClips, toggleKeyAtCTI, newComposition, fitLayersToComp, workAreaToSelection,
+  importFiles, addAssetLayer, openSpecialFile,
 } from './aeActions'
 import {
   MousePointer2, Hand, ZoomIn, RotateCw, Move, Square, Circle, PenTool, Type, Home, Download,
@@ -41,7 +43,7 @@ import {
 
 type PanelEl = { title: string; el: ReactNode }
 
-interface Docks { leftW: number; rightW: number; timelineH: number; leftTab: string; rightTab: string; rightCollapsed: boolean; infoOpen: boolean; previewOpen: boolean; alignOpen: boolean }
+interface Docks { leftW: number; rightW: number; timelineH: number; leftTab: string; rightTab: string; rightCollapsed: boolean; infoOpen: boolean; previewOpen: boolean; alignOpen: boolean; leftExtra?: string[]; leftExtraTab?: string; leftSplit?: number }
 const DOCK_KEY = 'anime-studio:ae-docks'
 const PRESETS: Record<WorkspaceId, Partial<Docks>> = {
   default: { leftW: 300, rightW: 300, timelineH: 300, leftTab: 'project', rightTab: 'effects', rightCollapsed: false },
@@ -100,7 +102,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
     const p = extList.find(e => e.id === extId)?.panels.find(x => x.id === panelId)
     return p ? { id: `ext:${k}`, title: p.name, extId, panelId } : null
   }).filter(Boolean) as { id: string; title: string; extId: string; panelId: string }[]
-  const allRightTabs = [...RIGHT_TABS.map(t => ({ id: t.id, title: t.title })), ...extTabs.map(t => ({ id: t.id, title: t.title }))]
+  const allRightTabsFull = [...RIGHT_TABS.map(t => ({ id: t.id, title: t.title })), ...extTabs.map(t => ({ id: t.id, title: t.title }))]
 
   const tool = useUIStore(s => s.tool)
   const setTool = useUIStore(s => s.setTool)
@@ -143,17 +145,48 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
     lastSel.current = selectedClipId
   }, [selectedClipId, workspace, setDocks])
 
+  // drop footage ANYWHERE (viewer, timeline, panels): import it and add it as layers,
+  // instead of only in the Project panel's drop zone
+  const [dropHint, setDropHint] = useState(false)
+  // Home screen (AE start screen): every project is saved separately in the library
+  const [home, setHome] = useState(false)
+  useEffect(() => { if (homeOnStart()) setHome(true) }, [])
+  useEffect(() => {
+    const open = () => setHome(true)
+    window.addEventListener('as-open-home', open)
+    return () => window.removeEventListener('as-open-home', open)
+  }, [])
+  useEffect(() => {
+    let leaveT: ReturnType<typeof setTimeout> | null = null
+    const over = (e: DragEvent) => {
+      if (!e.dataTransfer?.types.includes('Files')) return
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
+      setDropHint(true); if (leaveT) clearTimeout(leaveT); leaveT = setTimeout(() => setDropHint(false), 250)
+    }
+    const drop = (e: DragEvent) => {
+      setDropHint(false)
+      if (e.defaultPrevented || !e.dataTransfer?.files?.length) return // the Project panel handled it
+      e.preventDefault()
+      const files = e.dataTransfer.files
+      void importFiles(files).then(metas => { for (const m of metas) addAssetLayer(m) })
+    }
+    window.addEventListener('dragover', over); window.addEventListener('drop', drop)
+    return () => { window.removeEventListener('dragover', over); window.removeEventListener('drop', drop) }
+  }, [])
+
   const applyWorkspace = (w: WorkspaceId) => { setWorkspace(w); setDocks(PRESETS[w]) }
 
   // ---------------------------------------------------------------- gutters
-  const drag = useRef<{ k: 'left' | 'right' | 'tl'; p0: number; s0: number } | null>(null)
-  const gDown = (k: 'left' | 'right' | 'tl') => (e: React.PointerEvent) => {
+  const drag = useRef<{ k: 'left' | 'right' | 'tl' | 'lsplit'; p0: number; s0: number } | null>(null)
+  const leftColRef = useRef<HTMLDivElement>(null)
+  const gDown = (k: 'left' | 'right' | 'tl' | 'lsplit') => (e: React.PointerEvent) => {
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-    drag.current = { k, p0: k === 'tl' ? e.clientY : e.clientX, s0: k === 'left' ? docks.leftW : k === 'right' ? docks.rightW : docks.timelineH }
+    drag.current = { k, p0: k === 'tl' || k === 'lsplit' ? e.clientY : e.clientX, s0: k === 'left' ? docks.leftW : k === 'right' ? docks.rightW : k === 'lsplit' ? (docks.leftSplit ?? 0.5) : docks.timelineH }
   }
   const gMove = (e: React.PointerEvent) => {
     const d = drag.current
     if (!d) return
+    if (d.k === 'lsplit') { const h = leftColRef.current?.clientHeight || 600; setDocks({ leftSplit: Math.max(0.15, Math.min(0.85, d.s0 + (e.clientY - d.p0) / h)) }); return }
     if (d.k === 'left') setDocks({ leftW: Math.max(200, Math.min(720, d.s0 + e.clientX - d.p0)) })
     else if (d.k === 'right') setDocks({ rightW: Math.max(220, Math.min(640, d.s0 - (e.clientX - d.p0))) })
     else setDocks({ timelineH: Math.max(150, Math.min(window.innerHeight - 260, d.s0 - (e.clientY - d.p0))) })
@@ -223,9 +256,9 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         if (lower === 'v') return run(() => toast(pasteClipboard()))
         if (lower === 'a' && sh) return run(() => s.select(null))
         if (lower === 'a') return run(selectAllLayers)
-        if (lower === 'n' && al) return run(() => setDialog('projects'))
+        if (lower === 'n' && al) return run(() => void newProjectFromHome())
         if (lower === 'n') return run(() => newComposition())
-        if (lower === 'o') return run(() => setDialog('projects'))
+        if (lower === 'o') return run(() => window.dispatchEvent(new Event('as-open-home')))
         if (lower === 'k') return run(() => setDialog('comp'))
         if (lower === 'm') return run(() => setDialog('export'))
         if (lower === 'i') return run(() => pickAndImport())
@@ -329,8 +362,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
   const menus: Menu[] = [
     {
       label: 'File', items: [
-        { label: 'New Project…', sc: 'Ctrl+Alt+N', action: () => setDialog('projects') },
-        { label: 'Open Project…', sc: 'Ctrl+O', action: () => setDialog('projects') },
+        { label: 'Home (Recent Projects)…', action: () => setHome(true) },
+        { label: 'New Project', sc: 'Ctrl+Alt+N', action: () => void newProjectFromHome() },
+        { label: 'Open Project… (.aeproject / .aep / .aepx)', sc: 'Ctrl+O', action: () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.aeproject,.aep,.aepx'; i.onchange = () => { const f = i.files?.[0]; if (f) void openSpecialFile(f) }; i.click() } },
+        { label: 'Project Files & Server…', action: () => setDialog('projects') },
         { sep: true },
         { label: 'Save', sc: 'Ctrl+S', action: () => { useEditorStore.getState().saveLocal(); useEditorStore.getState().toast({ kind: 'success', title: 'Project saved' }) } },
         { label: 'Save As… (download project file)', sc: 'Ctrl+Shift+S', action: () => void downloadProjectFile(useEditorStore.getState().doc) },
@@ -340,8 +375,8 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { sep: true },
         {
           label: 'Scripts', sub: [
-            { label: 'Run Script File…', action: () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.jsx,.js'; i.onchange = () => { const f = i.files?.[0]; if (f) void runScriptFile(f) }; i.click() } },
-            { label: 'Install Script or Extension (.jsx / .zxp)…', action: () => setDocks({ rightTab: 'extensions', rightCollapsed: false }) },
+            { label: 'Run Script File…', action: () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.jsx,.js,.jsxinc,.jsxbin,.ffx,.zip,.zxp'; i.onchange = () => { const f = i.files?.[0]; if (f) void runScriptFile(f) }; i.click() } },
+            { label: 'Install Script or Extension (.jsx / .js / .zip / .zxp)…', action: () => setDocks({ rightTab: 'extensions', rightCollapsed: false }) },
             ...extList.filter(e => e.kind === 'script').map(e => ({ label: e.name, action: () => openFloatingExt(e.id, 'main') })),
           ],
         },
@@ -396,6 +431,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Null Object', sc: 'Ctrl+Alt+Shift+Y', action: () => newLayer('null') },
         { label: 'Camera…', action: () => newLayer('camera') },
         { sep: true },
+        { label: 'Remove All Markers (incl. beat markers)', action: () => window.dispatchEvent(new Event('as-clear-markers')) },
         { label: 'AI Video Lab (Enhance / Interpolate)…', action: () => setDialog('videolab') },
         { label: 'Adjustment Layer', sc: 'Ctrl+Alt+Y', action: () => newLayer('adjustment') },
         { sep: true },
@@ -435,6 +471,8 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Keyframe Assistant ▸ Easy Ease In', action: () => setSelectedKeyEasing('easeIn'), disabled: !hasSel },
         { label: 'Keyframe Assistant ▸ Easy Ease Out', action: () => setSelectedKeyEasing('easeOut'), disabled: !hasSel },
         { label: 'Toggle Hold Keyframe', action: () => setSelectedKeyEasing('hold'), disabled: !hasSel },
+        { label: 'Save Animation Preset…', disabled: !hasSel, action: () => { const c = sel; if (!c) return; const name = window.prompt('Preset name', `${c.name} preset`); if (!name) return; void import('@/lib/extensions/ffx').then(m => m.saveLayerAsPreset(c, name.trim())).then(() => useEditorStore.getState().toast({ kind: 'success', title: `Saved preset "${name}"`, detail: 'Effects & Presets › Animation Presets' })) } },
+        { label: 'Apply Animation Preset… (.ffx)', disabled: !hasSel, action: () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.ffx,.aspreset'; i.onchange = () => { const f = i.files?.[0]; if (f) void openSpecialFile(f) }; i.click() } },
         { label: 'Linear Keyframe', action: () => setSelectedKeyEasing('linear'), disabled: !hasSel },
         { sep: true },
         { label: 'Previous Keyframe', sc: 'J', action: () => jumpKeyframe(-1) },
@@ -497,13 +535,29 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
     },
   ]
 
-  const extTab = extTabs.find(t => t.id === docks.rightTab)
-  const rightTabDef = RIGHT_TABS.find(t => t.id === docks.rightTab) ?? RIGHT_TABS[0]
-  const rightBody = extTab ? <ExtensionView key={extTab.id} extId={extTab.extId} panelId={extTab.panelId} />
-    : rightTabDef.id === 'effects' ? <EffectsPresetsPanel />
-      : rightTabDef.id === 'videolab' ? <VideoLab />
-        : rightTabDef.id === 'extensions' ? <ExtensionsPanel />
-          : panels[rightTabDef.panel!]?.el
+  /** Body of any dockable tab (built-in panel or extension), wherever it is docked. */
+  const tabBody = (id: string): ReactNode => {
+    const ext = extTabs.find(t => t.id === id)
+    if (ext) return <ExtensionView key={ext.id} extId={ext.extId} panelId={ext.panelId} />
+    const def = RIGHT_TABS.find(t => t.id === id) ?? RIGHT_TABS[0]
+    return def.id === 'effects' ? <EffectsPresetsPanel />
+      : def.id === 'videolab' ? <VideoLab />
+        : def.id === 'extensions' ? <ExtensionsPanel />
+          : panels[def.panel!]?.el
+  }
+  // AE-style docking: any right-column tab can be moved into a second group under Project
+  const leftExtra = (docks.leftExtra ?? []).filter(id => allRightTabsFull.some(t => t.id === id))
+  const rightTabs = allRightTabsFull.filter(t => !leftExtra.includes(t.id))
+  const rightCur = rightTabs.some(t => t.id === docks.rightTab) ? docks.rightTab : rightTabs[0]?.id ?? 'effects'
+  const extTab = extTabs.find(t => t.id === rightCur)
+  const rightBody = tabBody(rightCur)
+  const leftExtraCur = leftExtra.includes(docks.leftExtraTab ?? '') ? docks.leftExtraTab! : leftExtra[0]
+  const moveTab = (id: string, to: 'left' | 'right') => {
+    const cur = docks.leftExtra ?? []
+    if (to === 'left') setDocks({ leftExtra: [...cur.filter(x => x !== id), id], leftExtraTab: id })
+    else setDocks({ leftExtra: cur.filter(x => x !== id), rightTab: id, rightCollapsed: false })
+  }
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string; side: 'left' | 'right' } | null>(null)
   const activeJob = jobs.find(j => j.status === 'running')
 
   const tools: { id: ToolId; icon: ReactNode; tip: string }[] = [
@@ -535,7 +589,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
 
       {/* ---------- tools ---------- */}
       <div className="ae-toolbar shrink-0 flex items-center px-1.5 gap-0.5 no-select">
-        <button className="ae-tool" title="Home: Projects" onClick={() => setDialog('projects')}><Home size={15} /></button>
+        <button className="ae-tool" title="Home: Recent Projects" onClick={() => setHome(true)}><Home size={15} /></button>
         <span className="w-px h-5 bg-[#3a3a3a] mx-1" />
         {tools.map(t => (
           <button key={t.id} className="ae-tool" data-on={tool === t.id ? '1' : '0'} title={t.tip} onClick={() => setTool(t.id)}>{t.icon}</button>
@@ -565,13 +619,26 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
       {/* ---------- upper frame ---------- */}
       <div className="flex-1 min-h-0 flex px-[3px] pt-[3px]" style={{ display: maximized === 'timeline' ? 'none' : undefined }}>
         {/* left: Project | Effect Controls */}
-        {maximized !== 'viewer' && <><Panel
-          style={{ width: docks.leftW }} active={focus === 'left'} onFocus={() => setFocus('left')}
-          tabs={[{ id: 'project', title: 'Project' }, { id: 'controls', title: sel ? `Effect Controls ${sel.name}` : 'Effect Controls' }]}
-          tab={docks.leftTab} onTab={id => setDocks({ leftTab: id })}
-        >
-          {docks.leftTab === 'project' ? <ProjectPanel /> : <div className="h-full overflow-auto as-scroll ae-sheet"><Inspector /></div>}
-        </Panel>
+        {maximized !== 'viewer' && <><div className="flex flex-col min-h-0" style={{ width: docks.leftW }} ref={leftColRef}>
+          <Panel
+            style={leftExtra.length ? { height: `${(docks.leftSplit ?? 0.5) * 100}%`, flex: 'none' } : { flex: 1 }} active={focus === 'left'} onFocus={() => setFocus('left')}
+            tabs={[{ id: 'project', title: 'Project' }, { id: 'controls', title: sel ? `Effect Controls ${sel.name}` : 'Effect Controls' }]}
+            tab={docks.leftTab} onTab={id => setDocks({ leftTab: id })}
+          >
+            {docks.leftTab === 'project' ? <ProjectPanel /> : <div className="h-full overflow-auto as-scroll ae-sheet"><Inspector /></div>}
+          </Panel>
+          {leftExtra.length > 0 && leftExtraCur && <>
+            <div className="ae-gutter ae-gutter-h" onPointerDown={gDown('lsplit')} />
+            <Panel
+              className="flex-1" active={focus === 'left2'} onFocus={() => setFocus('left2' as never)}
+              tabs={allRightTabsFull.filter(t => leftExtra.includes(t.id))} tab={leftExtraCur} onTab={id => setDocks({ leftExtraTab: id })}
+              onTabContext={(id, x, y) => setTabMenu({ id, x, y, side: 'left' })}
+              onClose={() => moveTab(leftExtraCur, 'right')}
+            >
+              <div className={`h-full min-h-0 overflow-auto as-scroll ae-sheet ${extTabs.some(t => t.id === leftExtraCur) ? 'flex flex-col' : ''}`}>{tabBody(leftExtraCur)}</div>
+            </Panel>
+          </>}
+        </div>
         <div className="ae-gutter ae-gutter-v" onPointerDown={gDown('left')} /></>}
 
         {/* center: composition viewer */}
@@ -592,7 +659,8 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
               {docks.alignOpen && <Section title="Align" onClose={() => setDocks({ alignOpen: false })}><AlignPanel /></Section>}
               <Panel
                 className="flex-1" active={focus === 'right'} onFocus={() => setFocus('right')}
-                tabs={allRightTabs} tab={allRightTabs.some(t => t.id === docks.rightTab) ? docks.rightTab : 'effects'} onTab={id => setDocks({ rightTab: id })}
+                tabs={rightTabs} tab={rightCur} onTab={id => setDocks({ rightTab: id })}
+                onTabContext={(id, x, y) => setTabMenu({ id, x, y, side: 'right' })}
                 onClose={() => setDocks({ rightCollapsed: true })}
               >
                 <div className={`h-full min-h-0 overflow-auto as-scroll ae-sheet ${extTab ? 'flex flex-col' : ''}`}>{rightBody}</div>
@@ -630,6 +698,23 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
       )}
 
       <ExtensionFloatingWindows />
+      {home && <HomeScreen onClose={() => setHome(false)} />}
+      {tabMenu && (
+        <>
+          <div className="fixed inset-0 z-[300]" onPointerDown={() => setTabMenu(null)} onContextMenu={e => { e.preventDefault(); setTabMenu(null) }} />
+          <div className="ae-menu z-[301]" style={{ position: 'fixed', left: tabMenu.x, top: tabMenu.y, minWidth: 230 }}>
+            {tabMenu.side === 'right'
+              ? <button className="ae-menu-item" onClick={() => { moveTab(tabMenu.id, 'left'); setTabMenu(null) }}>Move Panel to Left Column</button>
+              : <button className="ae-menu-item" onClick={() => { moveTab(tabMenu.id, 'right'); setTabMenu(null) }}>Move Panel to Right Column</button>}
+            {extTabs.some(t => t.id === tabMenu.id) && <button className="ae-menu-item" onClick={() => { const t = extTabs.find(x => x.id === tabMenu.id)!; useExtStore.getState().openFloating(t.extId, t.panelId); useExtStore.getState().undock(`${t.extId}|${t.panelId}`); setTabMenu(null) }}>Undock (Float)</button>}
+          </div>
+        </>
+      )}
+      {dropHint && (
+        <div className="absolute inset-0 z-[260] pointer-events-none flex items-center justify-center bg-[#2d8ceb]/10 border-2 border-dashed border-[#2d8ceb]">
+          <div className="px-5 py-3 rounded-md bg-[#1f1f1f] border border-black text-[13px] text-zinc-100 shadow-xl">Drop to import and add to the composition</div>
+        </div>
+      )}
 
       {/* ---------- toasts ---------- */}
       <div className="absolute bottom-3 right-3 z-[300] w-[340px] space-y-1.5 pointer-events-none">
@@ -651,9 +736,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
 
 // ------------------------------------------------------------------ chrome
 
-function Panel({ tabs, tab, onTab, children, className = '', style, active, onFocus, onClose, tabIcon }: {
+function Panel({ tabs, tab, onTab, children, className = '', style, active, onFocus, onClose, tabIcon, onTabContext }: {
   tabs: { id: string; title: string }[]; tab: string; onTab: (id: string) => void; children: ReactNode
   className?: string; style?: React.CSSProperties; active?: boolean; onFocus?: () => void; onClose?: () => void; tabIcon?: boolean
+  onTabContext?: (id: string, x: number, y: number) => void
 }) {
   // Tab strip overflow (AE-style): mouse wheel scrolls the strip sideways,
   // ‹ › arrows appear when tabs are hidden, and » lists every tab.
@@ -696,7 +782,9 @@ function Panel({ tabs, tab, onTab, children, className = '', style, active, onFo
         {ov.l && <button className="ae-tabs-arrow" onClick={() => nudge(-1)} aria-label="Previous tabs"><ChevronRight size={12} className="rotate-180" /></button>}
         <div ref={strip} className="ae-tabs flex-1 min-w-0" onScroll={measure}>
           {tabs.map(t => (
-            <button key={t.id} className="ae-tab" data-on={t.id === tab ? '1' : '0'} onClick={() => onTab(t.id)}>
+            <button key={t.id} className="ae-tab" data-on={t.id === tab ? '1' : '0'} onClick={() => onTab(t.id)}
+              onContextMenu={onTabContext ? e => { e.preventDefault(); onTabContext(t.id, e.clientX, e.clientY) } : undefined}
+              title={onTabContext ? 'Right-click: move this panel to another column' : undefined}>
               {tabIcon && <span className="w-[9px] h-[9px] rounded-[1px] bg-[#a89677]" />}
               <span className="truncate max-w-[220px]">{t.title}</span>
               {onClose && t.id === tab && <X size={11} className="ae-tab-x" onClick={e => { e.stopPropagation(); onClose() }} />}
@@ -714,7 +802,8 @@ function Panel({ tabs, tab, onTab, children, className = '', style, active, onFo
             <div className="fixed inset-0 z-[180]" onPointerDown={() => setListOpen(false)} />
             <div className="ae-menu right-0 top-[28px] z-[190] max-h-[60vh] overflow-y-auto as-scroll">
               {tabs.map(t => (
-                <button key={t.id} className="ae-menu-item w-full" onClick={() => { onTab(t.id); setListOpen(false) }}>
+                <button key={t.id} className="ae-menu-item w-full" onClick={() => { onTab(t.id); setListOpen(false) }}
+                  onContextMenu={onTabContext ? e => { e.preventDefault(); setListOpen(false); onTabContext(t.id, e.clientX, e.clientY) } : undefined}>
                   <span className="w-4 text-[#2d8ceb]">{t.id === tab ? '✓' : ''}</span>
                   <span className="flex-1 text-left">{t.title}</span>
                 </button>

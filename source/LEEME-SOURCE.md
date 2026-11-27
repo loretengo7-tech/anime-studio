@@ -1,5 +1,28 @@
 # ANIME STUDIO — Código fuente completo
 
+## v22 — Pantalla de inicio con proyectos, proyectos de After Effects, presets .ffx, arreglos
+
+- **Home (como After Effects)**: al iniciar muestra *Recent projects*; cada proyecto se guarda
+  por separado (IndexedDB, autosave) — New Project ya no pisa el anterior. Abrir, renombrar,
+  duplicar, borrar. Botón Home, File › Home / New Project / Open Project. `HomeScreen.tsx`,
+  `src/lib/store/projectLibrary.ts`.
+- **Proyectos de After Effects (.aep / .aepx)**: comps (tamaño, fps, duración), capas en orden
+  (footage, sólidos, nulls, texto, shapes, cámaras, ajuste, 3D, precomps) y efectos con
+  equivalente. El footage entra *offline* y se re-vincula solo al importar el archivo con el
+  mismo nombre. `src/lib/media/aepImport.ts`. Expresiones/efectos propios de AE no se convierten.
+- **Presets de After (.ffx)**: Effects & Presets › Animation Presets (+ Install .ffx), doble clic
+  aplica; Animation › Apply Animation Preset / Save Animation Preset (`.aspreset` propio con
+  efectos + keyframes + expresiones). `src/lib/extensions/ffx.ts`.
+- **Scripts**: .jsx, .js, .jsxinc, `#include` resueltos dentro de .zip/.zxp, zip con varios
+  scripts; arrastrar .jsx/.ffx/.aep a la ventana los ejecuta/aplica/abre. `.jsxbin` sigue sin
+  poder ejecutarse (bytecode cifrado de Adobe).
+- **Arreglos**: marcadores de beat borrables (Delete, clic derecho, borrar todos); zoom-out del
+  timeline; CTI azul que se salía; borrar ítems del panel Project; mano sólo al arrastrar;
+  soltar clips en cualquier parte; preview con muchas capas / máscaras pen / motion blur /
+  texto / AI cut-out + texto detrás; Easy Ease en todos los keyframes seleccionados; selección
+  azul por arrastre de keyframes; doble clic para escribir valores; workspace acoplable.
+- **Time Warp (estilo Twixtor)**: horneado con RIFE/flujo óptico desde el panel de velocidad.
+
 ## v21 — IA neuronal (RIFE + Real-ESRGAN), arreglos de scripts, Enhance y reproducción
 
 - **IA neuronal en el Video Lab (app de PC)**: RIFE 4.6 (interpolación, el modelo de Flowframes)

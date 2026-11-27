@@ -118,7 +118,11 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
   const imported: AssetMeta[] = []
   if (!files || files.length === 0) return imported
   const { mutate, toast } = st()
-  for (const file of Array.from(files)) {
+  const all = Array.from(files)
+  // projects, scripts, presets and extensions are routed like AE does (open / run / apply / install)
+  const special = all.filter(f => SPECIAL_EXT.test(f.name))
+  for (const f of special) await openSpecialFile(f)
+  for (const file of all.filter(f => !SPECIAL_EXT.test(f.name))) {
     onBusy?.(file.name)
     try {
       const meta = await importMediaFile(file, STATIC_MODE
@@ -135,9 +139,20 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
           if (!res.ok) throw new Error(await res.text())
           return await res.json() as { id: string; url: string }
         }, opts)
-      mutate(d => { d.assets.push(meta) })
+      // relink offline footage (After Effects import) with the same file name
+      const offline = st().doc.assets.find(a => a.missingPath && a.name.toLowerCase() === meta.name.toLowerCase())
+      mutate(d => {
+        d.assets.push(meta)
+        if (offline) {
+          const relink = (clips: typeof d.clips) => { for (const c of clips) if ('assetId' in c && c.assetId === offline.id) { c.assetId = meta.id; if (meta.kind === 'video' && c.duration > meta.duration && meta.duration > 0) c.duration = meta.duration } }
+          relink(d.clips)
+          for (const p of d.precomps ?? []) relink(p.clips)
+          d.assets = d.assets.filter(a => a.id !== offline.id)
+        }
+      })
       mediaManager.registerAsset(meta)
       imported.push(meta)
+      if (offline) { toast({ kind: 'success', title: `Relinked ${meta.name}`, detail: 'Offline footage from the After Effects project is now online.' }); continue }
       // Desktop app: heavy footage (above 1280 px or above 60 fps) gets an automatic ffmpeg proxy
       if (desktopBridge() && meta.kind === 'video' && (meta.width > 1280 || meta.fps > 60)) {
         const upsert = useEditorStore.getState().upsertJob
@@ -157,11 +172,36 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
 }
 
 /** Opens the OS file picker (File > Import > File… / Ctrl+I). */
+const SPECIAL_EXT = /\.(aep|aepx|aeproject|jsx|jsxinc|jsxbin|ffx|aspreset|zxp)$/i
+
+/** Open an AE / AnimeStudio project, run a script, apply a .ffx preset or install a .zxp. */
+export async function openSpecialFile(f: File) {
+  const toast = st().toast
+  try {
+    if (/\.(aep|aepx)$/i.test(f.name)) {
+      const [{ importAfterEffectsProject }, { openProjectDoc }] = await Promise.all([import('@/lib/media/aepImport'), import('@/components/editor/HomeScreen')])
+      const doc = await importAfterEffectsProject(f)
+      await openProjectDoc(doc)
+      const off = doc.assets.filter(a => a.missingPath).length
+      toast({ kind: 'success', title: `Opened After Effects project "${doc.name}"`, detail: `${doc.clips.length} layers${doc.precomps?.length ? ` · ${doc.precomps.length} pre-comps` : ''}${off ? ` · ${off} footage item${off > 1 ? 's' : ''} offline — import the files to relink them by name` : ''}` })
+    } else if (/\.aeproject$/i.test(f.name)) {
+      const [{ parseProject }, { openProjectDoc }] = await Promise.all([import('@/lib/media/projectFile'), import('@/components/editor/HomeScreen')])
+      await openProjectDoc(parseProject(await f.text()).doc)
+      toast({ kind: 'success', title: `Opened ${f.name}` })
+    } else {
+      const { runScriptFile } = await import('@/components/editor/ExtensionsPanel')
+      await runScriptFile(f)
+    }
+  } catch (e) {
+    toast({ kind: 'error', title: `Could not open ${f.name}`, detail: e instanceof Error ? e.message : String(e) })
+  }
+}
+
 export function pickAndImport(influx = false) {
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-  input.accept = influx ? '' : 'video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav,.wmv,.flv,.mxf,.mts,.m2ts,.ts,.vob,.3gp,.mpg,.mpeg,.influx'
+  input.accept = influx ? '' : 'video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav,.wmv,.flv,.mxf,.mts,.m2ts,.ts,.vob,.3gp,.mpg,.mpeg,.influx,.aep,.aepx,.aeproject,.jsx,.jsxinc,.ffx,.aspreset,.zxp'
   input.onchange = () => {
     if (influx && !desktopBridge()) { st().toast({ kind: 'error', title: 'Influx import needs the desktop app', detail: 'It converts any format (and keeps transparency) with the bundled ffmpeg.' }); return }
     void importFiles(input.files, undefined, influx ? { influx: true } : undefined)
@@ -397,38 +437,45 @@ export function jumpKeyframe(dir: -1 | 1, clip?: Clip | null, props?: string[]) 
 }
 
 /** Animation > Keyframe Assistant > Easy Ease (F9) on the selected keyframe(s). */
+/** Every selected keyframe id (multi-selection), falling back to the single one. */
+function selectedKfIds(): Set<string> {
+  const s = st()
+  return new Set(s.selectedKeyframeIds.length ? s.selectedKeyframeIds : s.selectedKeyframeId ? [s.selectedKeyframeId] : [])
+}
+
+/**
+ * F9 Easy Ease / Shift+F9 / Ctrl+Shift+F9 / Hold… on ALL selected keyframes,
+ * on any layer and any property (it used to touch only the last one clicked).
+ * With no keyframe selected it applies to every key of the selected layer.
+ */
 export function setSelectedKeyEasing(easing: EasingName) {
   const s = st()
-  const kfId = s.selectedKeyframeId
+  const ids = selectedKfIds()
   const c = selectedClip()
-  if (!c) return
+  if (!ids.size && !c) return
   s.mutate(d => {
-    const clip = d.clips.find(x => x.id === c.id)
-    if (!clip) return
-    let touched = false
-    for (const k of clip.keyframes) for (const kf of k.keyframes) {
-      if (!kfId || kf.id === kfId) { kf.easing = easing; touched = true }
+    for (const clip of d.clips) {
+      if (!ids.size && clip.id !== c?.id) continue
+      const hit = (id: string) => (ids.size ? ids.has(id) : true)
+      for (const k of clip.keyframes) for (const kf of k.keyframes) if (hit(kf.id)) { kf.easing = easing; if (easing !== 'bezier') delete kf.handles }
+      for (const e of clip.effects) for (const kfs of Object.values(e.paramKeyframes ?? {})) for (const kf of kfs) if (hit(kf.id)) { kf.easing = easing; if (easing !== 'bezier') delete kf.handles }
     }
-    for (const e of clip.effects) for (const kfs of Object.values(e.paramKeyframes ?? {})) for (const kf of kfs) {
-      if (!kfId || kf.id === kfId) { kf.easing = easing; touched = true }
-    }
-    void touched
-  })
+  }, 'Keyframe interpolation')
 }
 
 export function deleteSelectedKeyframe(): boolean {
   const s = st()
-  const kfId = s.selectedKeyframeId
-  if (!kfId) return false
+  const ids = selectedKfIds()
+  if (!ids.size) return false
   s.mutate(d => {
     for (const c of d.clips) {
-      for (const k of c.keyframes) k.keyframes = k.keyframes.filter(kf => kf.id !== kfId)
+      for (const k of c.keyframes) k.keyframes = k.keyframes.filter(kf => !ids.has(kf.id))
       c.keyframes = c.keyframes.filter(k => k.keyframes.length > 0)
       for (const e of c.effects) for (const key of Object.keys(e.paramKeyframes ?? {})) {
-        e.paramKeyframes[key] = e.paramKeyframes[key].filter(kf => kf.id !== kfId)
+        e.paramKeyframes[key] = e.paramKeyframes[key].filter(kf => !ids.has(kf.id))
       }
     }
-  })
+  }, 'Delete keyframes')
   s.selectKeyframe(null)
   return true
 }

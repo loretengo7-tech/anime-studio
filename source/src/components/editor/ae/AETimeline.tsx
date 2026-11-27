@@ -172,6 +172,9 @@ export function AETimeline() {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [dropLine, setDropLine] = useState<number | null>(null)
 
+  const [selMarker, setSelMarker] = useState<string | null>(null)
+  const [markerMenu, setMarkerMenu] = useState<{ x: number; y: number; id: string | null } | null>(null)
+  const markerDrag = useRef<{ id: string; x0: number; t0: number; moved: boolean } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const ctiRef = useRef<HTMLDivElement>(null)
   const ctiHeadRef = useRef<HTMLDivElement>(null)
@@ -186,7 +189,21 @@ export function AETimeline() {
     return end
   }, [doc, compDur])
   const LW = AV_W + NUM_W + NAME_W + SW_W + (showModes ? MODE_W : 0) + PARENT_W
-  const contentW = Math.max(400, duration * pps + 40)
+  // zoom-out limit = the whole comp fits the visible ruler (AE behaviour). Zooming
+  // further out used to squash the ruler into a corner and break the timeline.
+  const [viewW, setViewW] = useState(1200)
+  useEffect(() => {
+    const sc = scrollRef.current
+    if (!sc) return
+    const ro = new ResizeObserver(() => setViewW(sc.clientWidth))
+    ro.observe(sc); setViewW(sc.clientWidth)
+    return () => ro.disconnect()
+  }, [])
+  const minPps = Math.max(0.5, (viewW - LW - 24) / Math.max(1, duration))
+  const MAXPPS = 800
+  const clampPps = (v: number) => Math.max(minPps, Math.min(MAXPPS, v))
+  useEffect(() => { setPps(p => (p < minPps ? minPps : p)) }, [minPps])
+  const contentW = Math.max(viewW - LW, duration * pps + 40)
 
   // fit comp to view on first mount / comp change
   const fitted = useRef<string>('')
@@ -198,9 +215,10 @@ export function AETimeline() {
     if (avail > 100) setPps(Math.max(4, Math.min(400, avail / Math.max(1, duration))))
   }, [doc.id, LW, duration])
 
+  const clampRef = useRef(clampPps); clampRef.current = clampPps
   // AE: = / - zoom the time ruler, F4 toggles Switches/Modes
   useEffect(() => {
-    const z = (e: Event) => { const d = (e as CustomEvent<number>).detail; setPps(p => Math.max(2, Math.min(800, d > 0 ? p * 1.4 : p / 1.4))) }
+    const z = (e: Event) => { const d = (e as CustomEvent<number>).detail; setPps(p => clampRef.current(d > 0 ? p * 1.4 : p / 1.4)) }
     const m = () => setShowModes(v => !v)
     window.addEventListener('as-tl-zoom', z); window.addEventListener('as-toggle-modes', m)
     return () => { window.removeEventListener('as-tl-zoom', z); window.removeEventListener('as-toggle-modes', m) }
@@ -230,6 +248,89 @@ export function AETimeline() {
     apply(playbackEngine.currentTime)
     return playbackEngine.subscribe(apply)
   }, [pps, fps, LW])
+
+  // ---- marquee (rubber-band) keyframe selection: drag on empty timeline space ----
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const onMarqueeDown = (e: React.PointerEvent, clipId: string) => {
+    if (e.button !== 0) return
+    const sc = scrollRef.current
+    if (!sc) return
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    const base = additive ? [...useEditorStore.getState().selectedKeyframeIds] : []
+    const sx = e.clientX, sy = e.clientY
+    let active = false
+    const toLocal = (cx: number, cy: number) => { const r = sc.getBoundingClientRect(); return { x: cx - r.left + sc.scrollLeft, y: cy - r.top + sc.scrollTop } }
+    const move = (ev: PointerEvent) => {
+      if (!active && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return
+      active = true
+      const a = toLocal(sx, sy), b = toLocal(ev.clientX, ev.clientY)
+      setMarquee({ x0: a.x, y0: a.y, x1: b.x, y1: b.y })
+      const L = Math.min(sx, ev.clientX), R = Math.max(sx, ev.clientX), T = Math.min(sy, ev.clientY), B = Math.max(sy, ev.clientY)
+      const hit = new Set(base)
+      sc.querySelectorAll<HTMLElement>('.aet-kf').forEach(el => {
+        const r = el.getBoundingClientRect()
+        if (r.right >= L && r.left <= R && r.bottom >= T && r.top <= B) for (const id of (el.dataset.kfids ?? '').split(',')) if (id) hit.add(id)
+      })
+      const arr = [...hit]
+      useEditorStore.setState({ selectedKeyframeIds: arr, selectedKeyframeId: arr[arr.length - 1] ?? null })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+      setMarquee(null)
+      if (!active) { select(clipId); if (!additive) useEditorStore.setState({ selectedKeyframeIds: [], selectedKeyframeId: null }) }
+    }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
+  }
+
+  // ---- markers (beat markers included): select, drag, delete ----
+  const removeMarkers = (pred: (m: { id: string; label: string; color: string }) => boolean, label: string) => {
+    const n = useEditorStore.getState().doc.markers.filter(pred).length
+    if (!n) return
+    mutate(d => { d.markers = d.markers.filter(m => !pred(m)) }, label)
+    setSelMarker(null)
+  }
+  const onMarkerDown = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    if (e.ctrlKey || e.metaKey) { removeMarkers(m => m.id === id, 'Delete marker'); return }
+    setSelMarker(id)
+    const m = doc.markers.find(x => x.id === id)
+    if (!m) return
+    ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
+    markerDrag.current = { id, x0: e.clientX, t0: m.time, moved: false }
+    const move = (ev: PointerEvent) => {
+      const d = markerDrag.current
+      if (!d) return
+      if (!d.moved && Math.abs(ev.clientX - d.x0) < 3) return
+      if (!d.moved) { d.moved = true; liveBegin(); document.body.style.cursor = 'ew-resize' }
+      const t = Math.max(0, Math.round((d.t0 + (ev.clientX - d.x0) / pps) * fps) / fps)
+      liveApply(doc2 => { const mk = doc2.markers.find(x => x.id === d.id); if (mk) mk.time = t })
+    }
+    const up = () => {
+      if (markerDrag.current?.moved) { liveEnd(); document.body.style.cursor = '' }
+      markerDrag.current = null
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
+  }
+  useEffect(() => {
+    if (!selMarker) return
+    const k = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault(); e.stopImmediatePropagation()
+        removeMarkers(m => m.id === selMarker, 'Delete marker')
+      } else if (e.key === 'Escape') setSelMarker(null)
+    }
+    window.addEventListener('keydown', k, true)
+    return () => window.removeEventListener('keydown', k, true)
+  }, [selMarker]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const all = () => removeMarkers(() => true, 'Delete all markers')
+    window.addEventListener('as-clear-markers', all)
+    return () => window.removeEventListener('as-clear-markers', all)
+  }) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- rows ----
   const layers = useMemo(() => layerOrder(doc), [doc])
@@ -379,7 +480,7 @@ export function AETimeline() {
     if (!d) return
     const dt = (e.clientX - d.x0) / pps
     if (!d.moved && Math.abs(e.clientX - d.x0) < 3) return
-    if (!d.moved) { d.moved = true; liveBegin() }
+    if (!d.moved) { d.moved = true; liveBegin(); document.body.style.cursor = d.mode === 'move' ? 'grabbing' : 'col-resize' }
     const snapOn = !e.shiftKey
     liveApply(doc2 => {
       const c = doc2.clips.find(c => c.id === d.clipId)
@@ -411,7 +512,7 @@ export function AETimeline() {
     })
   }
   const onBarUp = () => {
-    if (barDrag.current?.moved) liveEnd()
+    if (barDrag.current?.moved) { liveEnd(); document.body.style.cursor = '' }
     barDrag.current = null
   }
 
@@ -479,7 +580,7 @@ export function AETimeline() {
     const r = reorder.current
     if (!r) return
     if (!r.active && Math.abs(e.clientY - r.y0) < 6) return
-    r.active = true
+    r.active = true; document.body.style.cursor = "grabbing"
     const sc = scrollRef.current
     if (!sc) return
     const y = e.clientY - sc.getBoundingClientRect().top + sc.scrollTop - RULER_H
@@ -491,6 +592,7 @@ export function AETimeline() {
   const onNameUp = () => {
     const r = reorder.current
     reorder.current = null
+    if (r?.active) document.body.style.cursor = ''
     if (r?.active && dropLine !== null) {
       const tops = layerRowTops.current
       const from = tops.findIndex(t => t.id === r.clipId)
@@ -659,7 +761,7 @@ export function AETimeline() {
           if (e.ctrlKey || e.metaKey || e.altKey) {
             e.preventDefault()
             const t = xToTime(e.clientX)
-            const next = Math.max(2, Math.min(800, pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15)))
+            const next = clampPps(pps * (e.deltaY < 0 ? 1.15 : 1 / 1.15))
             setPps(next)
             const sc = scrollRef.current
             if (sc) requestAnimationFrame(() => { sc.scrollLeft = Math.max(0, t * next - (e.clientX - sc.getBoundingClientRect().left - LW)) })
@@ -669,7 +771,7 @@ export function AETimeline() {
         <div style={{ width: LW + (graphMode ? 0 : contentW), minHeight: '100%' }} className="relative">
           {/* column header + ruler (sticky top) */}
           <div className="sticky top-0 z-30 flex" style={{ height: RULER_H }}>
-            <div className="sticky left-0 z-10 aet-colh !h-full !items-end pb-1 shrink-0 bg-[#1f1f1f]" style={{ width: LW }}>
+            <div className="sticky left-0 z-20 aet-colh !h-full !items-end pb-1 shrink-0 bg-[#1f1f1f]" style={{ width: LW }}>
               <div className="flex items-center justify-around shrink-0 text-zinc-500" style={{ width: AV_W }} title="Video · Audio · Solo · Lock">
                 <Eye size={12} /><Volume2 size={12} /><span className="w-2.5 h-2.5 rounded-full border border-zinc-500" /><Lock size={11} />
               </div>
@@ -686,6 +788,7 @@ export function AETimeline() {
                 className="relative bg-[#1f1f1f] border-b border-black cursor-ew-resize"
                 style={{ width: contentW, touchAction: 'none' }}
                 onPointerDown={onRulerDown}
+                onContextMenu={e => { e.preventDefault(); setMarkerMenu({ x: e.clientX, y: e.clientY, id: null }) }}
                 onPointerMove={onRulerMove}
                 onPointerUp={onRulerUp}
                 onPointerCancel={onRulerUp}
@@ -693,7 +796,7 @@ export function AETimeline() {
                 <CacheBar pps={pps} />
                 {/* work area bar */}
                 <div className="absolute left-0 right-0 top-0 h-[9px] bg-[#1a1a1a]">
-                  <div className="absolute top-[1px] h-[7px] bg-[#5b6574] hover:bg-[#6c7787] cursor-grab" style={{ left: wa.in * pps, width: Math.max(4, (wa.out - wa.in) * pps) }}
+                  <div className="absolute top-[1px] h-[7px] bg-[#5b6574] hover:bg-[#6c7787] cursor-default" style={{ left: wa.in * pps, width: Math.max(4, (wa.out - wa.in) * pps) }}
                     onPointerDown={onWaDown('both')} title="Work area (B / N)">
                     <div className="absolute left-0 top-0 h-full w-[6px] bg-[#8b97a8] cursor-col-resize" onPointerDown={onWaDown('in')} />
                     <div className="absolute right-0 top-0 h-full w-[6px] bg-[#8b97a8] cursor-col-resize" onPointerDown={onWaDown('out')} />
@@ -708,8 +811,11 @@ export function AETimeline() {
                 {/* comp end shade */}
                 <div className="absolute top-[9px] bottom-0 bg-black/30 pointer-events-none" style={{ left: compDur * pps, right: 0 }} />
                 {doc.markers.map(m => (
-                  <div key={m.id} className="absolute bottom-0 pointer-events-none" style={{ left: m.time * pps - 4 }} title={m.label}>
-                    <div className="w-2 h-3" style={{ background: m.color, clipPath: 'polygon(0 0,100% 0,100% 65%,50% 100%,0 65%)' }} />
+                  <div key={m.id} className="absolute bottom-0 z-[5]" style={{ left: m.time * pps - 5, cursor: 'pointer' }}
+                    title={`${m.label || 'Marker'} — drag to move · Delete / Ctrl+click to remove · right-click for more`}
+                    onPointerDown={e => onMarkerDown(e, m.id)}
+                    onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setSelMarker(m.id); setMarkerMenu({ x: e.clientX, y: e.clientY, id: m.id }) }}>
+                    <div className="w-[10px] h-[13px]" style={{ background: m.color, clipPath: 'polygon(0 0,100% 0,100% 65%,50% 100%,0 65%)', outline: selMarker === m.id ? '2px solid #fff' : 'none', filter: selMarker === m.id ? 'brightness(1.35)' : undefined }} />
                   </div>
                 ))}
                 {/* CTI head */}
@@ -848,7 +954,7 @@ export function AETimeline() {
                     <div
                       className={`relative shrink-0 ${isLayer ? (sel ? 'bg-[#2b2b2b]' : 'bg-[#232323]') : 'bg-[#1e1e1e]'} border-b border-[#191919]`}
                       style={{ width: contentW }}
-                      onPointerDown={e => { if (e.target === e.currentTarget) select(isLayer ? r.clip.id : r.clip.id) }}
+                      onPointerDown={e => { if (e.target === e.currentTarget) onMarqueeDown(e, r.clip.id) }}
                       onDragOver={onDragOver}
                       onDrop={e => onDrop(e, isLayer ? r.clip : undefined)}
                     >
@@ -870,12 +976,16 @@ export function AETimeline() {
               </div>
             )}
 
+            {marquee && (
+              <div className="absolute pointer-events-none z-40 border border-[#2d8ceb] bg-[#2d8ceb]/15"
+                style={{ left: Math.min(marquee.x0, marquee.x1), top: Math.min(marquee.y0, marquee.y1) - RULER_H, width: Math.abs(marquee.x1 - marquee.x0), height: Math.abs(marquee.y1 - marquee.y0) }} />
+            )}
             {/* drop indicator for layer reorder */}
             {dropY !== null && <div className="absolute left-0 h-[2px] bg-amber-500 z-40 pointer-events-none" style={{ top: dropY - 1, width: LW }} />}
 
             {/* CTI line */}
             {!graphMode && (
-              <div className="absolute top-0 bottom-0 pointer-events-none z-30" style={{ left: LW }}>
+              <div className="absolute top-0 bottom-0 pointer-events-none z-10" style={{ left: LW }}>
                 <div ref={ctiRef} className="absolute top-0 bottom-0 w-px" style={{ background: 'var(--ae-cti)', minHeight: 2000 }} />
               </div>
             )}
@@ -885,14 +995,27 @@ export function AETimeline() {
       </div>
 
 
+      {markerMenu && (
+        <>
+          <div className="fixed inset-0 z-[300]" onPointerDown={() => setMarkerMenu(null)} onContextMenu={e => { e.preventDefault(); setMarkerMenu(null) }} />
+          <div className="ae-menu z-[301]" style={{ position: 'fixed', left: markerMenu.x, top: markerMenu.y, minWidth: 220 }}>
+            {markerMenu.id && <button className="ae-menu-item" onClick={() => { removeMarkers(m => m.id === markerMenu.id, 'Delete marker'); setMarkerMenu(null) }}>Delete This Marker<span className="ae-sc">Del</span></button>}
+            <button className="ae-menu-item" onClick={() => { removeMarkers(m => m.label === 'Beat' || m.color === '#3ccf55', 'Delete beat markers'); setMarkerMenu(null) }}>Delete All Beat Markers</button>
+            <button className="ae-menu-item" onClick={() => { removeMarkers(() => true, 'Delete all markers'); setMarkerMenu(null) }}>Delete All Markers</button>
+            <div className="ae-menu-sep" />
+            <button className="ae-menu-item" onClick={() => { const t = playbackEngine.currentTime; mutate(d => { d.markers.push({ id: uid('mk'), time: t, label: '', color: '#2d8ceb' }) }, 'Add marker'); setMarkerMenu(null) }}>Add Marker at CTI<span className="ae-sc">*</span></button>
+          </div>
+        </>
+      )}
+
       {/* ---------- bottom bar ---------- */}
       <div className="h-6 shrink-0 flex items-center gap-2 px-2 bg-[#1f1f1f] border-t border-black text-[11px] text-zinc-400">
         <button className="hover:text-white whitespace-nowrap" onClick={() => setShowModes(m => !m)} title="F4">Toggle Switches / Modes</button>
         <div className="flex-1" />
-        <button className="tb-btn !w-6 !h-5" title="Zoom out (-)" onClick={() => setPps(p => Math.max(2, p / 1.4))}><Mountain size={11} /></button>
-        <input type="range" className="as-range !h-4 w-40" min={0} max={100} value={Math.round(100 * Math.log(pps / 2) / Math.log(400))}
-          onChange={e => setPps(2 * Math.pow(400, +e.target.value / 100))} aria-label="Timeline zoom" />
-        <button className="tb-btn !w-6 !h-5" title="Zoom in (=)" onClick={() => setPps(p => Math.min(800, p * 1.4))}><MountainSnow size={13} /></button>
+        <button className="tb-btn !w-6 !h-5" title="Zoom out (-)" onClick={() => setPps(p => clampPps(p / 1.4))}><Mountain size={11} /></button>
+        <input type="range" className="as-range !h-4 w-40" min={0} max={100} value={Math.round(100 * Math.log(pps / minPps) / Math.log(MAXPPS / minPps))}
+          onChange={e => setPps(clampPps(minPps * Math.pow(MAXPPS / minPps, +e.target.value / 100)))} aria-label="Timeline zoom" />
+        <button className="tb-btn !w-6 !h-5" title="Zoom in (=)" onClick={() => setPps(p => clampPps(p * 1.4))}><MountainSnow size={13} /></button>
       </div>
 
       {graphMode && <GraphOverlay left={LW} />}
@@ -942,7 +1065,7 @@ function LayerCells({ clip, index, label, showModes, layers, open, onTwirl, flip
         />
         <span className="text-[11px] text-zinc-400 w-4 text-right">{index}</span>
       </div>
-      <div className="shrink-0 min-w-0 flex items-center gap-1 pl-1 pr-1 h-full cursor-grab" style={{ width: NAME_W }} onPointerDown={onNameDown} onDoubleClick={() => clip.kind === 'precomp' ? openComp(clip.precompId) : onRenameStart()} title={clip.kind === 'precomp' ? 'Double-click to open the pre-comp' : 'Drag to reorder · double-click to rename'}>
+      <div className="shrink-0 min-w-0 flex items-center gap-1 pl-1 pr-1 h-full cursor-default" style={{ width: NAME_W }} onPointerDown={onNameDown} onDoubleClick={() => clip.kind === 'precomp' ? openComp(clip.precompId) : onRenameStart()} title={clip.kind === 'precomp' ? 'Double-click to open the pre-comp' : 'Drag to reorder · double-click to rename'}>
         <KindIcon clip={clip} />
         {renaming ? (
           <input autoFocus defaultValue={clip.name} className="aet-input flex-1 min-w-0" onPointerDown={stop}
@@ -1076,7 +1199,10 @@ function ScrubValue({ value, min, max, step, onLive, expr }: {
   if (edit) {
     return (
       <input autoFocus defaultValue={fmt(value)} inputMode="decimal" className="aet-input w-16"
+        onFocus={e => e.currentTarget.select()}
+        onPointerDown={e => e.stopPropagation()} onDoubleClick={e => { e.stopPropagation(); (e.target as HTMLInputElement).select() }}
         onKeyDown={e => {
+          e.stopPropagation()
           if (e.key === 'Enter') { const n = parseFloat((e.target as HTMLInputElement).value.replace(',', '.')); if (!isNaN(n)) { onLive('begin', 0); onLive('move', clamp(n)); onLive('end', 0) } setEdit(false) }
           if (e.key === 'Escape') setEdit(false)
         }}
@@ -1097,6 +1223,7 @@ function ScrubValue({ value, min, max, step, onLive, expr }: {
         onLive('move', clamp(d.v + dx * step * mul * (step >= 1 ? 1 : 2)))
       }}
       onPointerUp={() => { const d = drag.current; drag.current = null; if (d?.moved) onLive('end', 0); else setEdit(true) }}
+      onDoubleClick={e => { e.stopPropagation(); drag.current = null; setEdit(true) }}
       onPointerCancel={() => { if (drag.current?.moved) onLive('end', 0); drag.current = null }}
     >{fmt(value)}</span>
   )
@@ -1125,7 +1252,7 @@ function LayerBar({ clip, pps, color, sel, doc, onDown }: {
       <div
         className="aet-bar"
         data-sel={sel ? '1' : '0'}
-        style={{ left, width, background: bg, opacity: clip.hidden ? 0.45 : 1, cursor: clip.locked ? 'not-allowed' : 'grab' }}
+        style={{ left, width, background: bg, opacity: clip.hidden ? 0.45 : 1, cursor: clip.locked ? 'not-allowed' : 'default' }}
         onPointerDown={e => onDown(e, clip, 'move')}
         onDoubleClick={() => { if (clip.kind === 'precomp') openComp(clip.precompId) }}
         title={clip.kind === 'precomp' ? `${clip.name} — double-click to open` : clip.name}
@@ -1162,7 +1289,7 @@ function PropKeys({ row, pps, selected, onDown }: {
         const ease = kf.easing === 'linear' ? 'linear' : kf.easing === 'hold' ? 'hold' : 'ease'
         const isSel = ids.some(id => selected.includes(id))
         return (
-          <div key={kf.id} className="aet-kf" data-ease={ease} data-sel={isSel ? '1' : '0'}
+          <div key={kf.id} className="aet-kf" data-ease={ease} data-sel={isSel ? '1' : '0'} data-kfids={ids.join(',')}
             style={{ left: (clip.start + kf.time) * pps }}
             onPointerDown={e => onDown(e, clip, kf, ids)}
             title={`${kf.easing} · ${kf.time.toFixed(2)}s — Shift+click: add to selection · Ctrl+C / Ctrl+V`} />

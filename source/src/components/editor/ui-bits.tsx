@@ -98,7 +98,10 @@ export function NumberInput({
         inputMode="decimal"
         value={draft}
         onChange={e => setDraft(e.target.value)}
+        onPointerDown={e => e.stopPropagation()}
+        onDoubleClick={e => { e.stopPropagation(); (e.target as HTMLInputElement).select() }}
         onKeyDown={e => {
+          e.stopPropagation()
           if (e.key === 'Enter') {
             e.preventDefault()
             commit(draft)
@@ -124,11 +127,12 @@ export function NumberInput({
   return (
     <span
       className={`as-mono text-[11px] text-zinc-300 w-16 text-right tabular-nums cursor-ew-resize hover:text-amber-300 hover:bg-white/5 rounded px-1 py-0.5 select-none ${className}`}
-      title="Drag to scrub — click to type an exact value"
+      title="Drag to scrub — click or double-click to type an exact value"
       onPointerDown={onChipPointerDown}
       onPointerMove={onChipPointerMove}
       onPointerUp={onChipPointerUp}
       onPointerCancel={onChipPointerUp}
+      onDoubleClick={e => { e.stopPropagation(); dragRef.current = null; if (!editing) beginEdit() }}
     >
       {formatNum(value)}{unit ?? ''}
     </span>

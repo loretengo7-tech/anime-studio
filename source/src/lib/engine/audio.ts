@@ -157,6 +157,13 @@ export class AudioEngine {
       }
     }
 
+    // clips sharing one decoder (duplicated layers) are heard ONCE
+    const seenEl = new Set<HTMLMediaElement>()
+    for (let i = audibleClips.length - 1; i >= 0; i--) {
+      const el = mediaManager.getElement(audibleClips[i].clip as unknown as VideoClip)
+      if (!el) continue
+      if (seenEl.has(el)) audibleClips.splice(i, 1); else seenEl.add(el)
+    }
     const liveIds = new Set(audibleClips.map(a => a.clip.id))
     // dispose nodes for clips no longer audible
     for (const [id, node] of this.nodes) {
@@ -169,7 +176,7 @@ export class AudioEngine {
     for (const { clip, gain } of audibleClips) {
       const assetId = (clip as AudioClip).assetId
       const asset = doc.assets.find(a => a.id === assetId) ?? mediaManager.assets.get(assetId)
-      if (!asset) continue
+      if (!asset || asset.missingPath) continue
       let node = this.nodes.get(clip.id)
       if (node && node.el !== mediaManager.getElement(clip as unknown as VideoClip)) {
         this.dropNode(node)

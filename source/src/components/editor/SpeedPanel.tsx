@@ -6,7 +6,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { VideoClip, AudioClip } from '@/lib/engine/types'
 import { useEditorStore } from '@/lib/store/editorStore'
 import { playbackEngine } from '@/lib/engine/playback'
-import { VELOCITY_PRESETS, clipAverageSpeed, clipSourceTime, generateVelocityPreset } from '@/lib/engine/speed'
+import { VELOCITY_PRESETS, clipAverageSpeed, clipSourceTime, clipInstantSpeed, generateVelocityPreset } from '@/lib/engine/speed'
+import { runVideoLab, neuralTools } from '@/lib/engine/videolab'
+import { importFiles } from './ae/aeActions'
 import { buildInterpSession, getInterpSession, disposeInterpSession } from '@/lib/engine/interpolation'
 import type { InterpQuality } from '@/lib/engine/interpolation'
 import { SectionTitle, SliderRow, Row, formatNum } from './ui-bits'
@@ -102,6 +104,48 @@ export function SpeedPanel() {
       const c = d.clips.find(c => c.id === clip.id)
       if (c) c.timeRemap = null
     })
+  }
+
+  // ---- Twixtor-style bake: render the slow parts with real in-between frames ----
+  const [baking, setBaking] = useState<number | null>(null)
+  const [nt, setNt] = useState({ esrgan: false, rife: false })
+  useEffect(() => { void neuralTools().then(setNt) }, [])
+  const bakeTwixtor = async () => {
+    if (!clip || clip.kind !== 'video') return
+    const vc = clip as VideoClip
+    const asset = doc.assets.find(a => a.id === vc.assetId)
+    if (!asset) return
+    // how slow does it get? → frames to generate per source frame
+    let minSpeed = clipAverageSpeed(vc)
+    for (let i = 0; i <= 60; i++) minSpeed = Math.min(minSpeed, Math.abs(clipInstantSpeed(vc, (i / 60) * vc.duration)) || minSpeed)
+    const F = Math.max(2, Math.min(8, Math.ceil(1 / Math.max(0.05, minSpeed))))
+    const srcFps = asset.fps || 30
+    const start = vc.inPoint
+    const srcDur = vc.timeRemap ? vc.timeRemap.sourceDuration : vc.duration * (vc.speed || 1)
+    setBaking(0)
+    const label = `Twixtor ${vc.name}`
+    try {
+      const file = await runVideoLab(asset, {
+        enhance: null, targetFps: srcFps * F, slowmo: true, method: nt.rife ? 'rife' : 'flow', quality: 'quality', sceneDetect: true,
+        start, end: Math.min(asset.duration, start + srcDur), bitrateMbps: 50, engine: nt.rife ? 'ffmpeg' : 'gpu',
+      }, p => { setBaking(p.progress); upsertJob({ id: `twx-${vc.id}`, kind: 'interp', label, status: 'running', progress: p.progress, message: p.message }) }, () => false)
+      const [meta] = await importFiles([file])
+      if (!meta) throw new Error('Import of the rendered frames failed')
+      mutate(d => {
+        const c = d.clips.find(x => x.id === vc.id) as VideoClip | undefined
+        if (!c) return
+        c.assetId = meta.id
+        c.inPoint = 0
+        if (c.timeRemap) c.timeRemap = { ...c.timeRemap, sourceDuration: c.timeRemap.sourceDuration * F }
+        else c.speed = (c.speed || 1) * F
+        c.muted = true // the slow-motion render has no audio
+      }, 'Twixtor bake')
+      upsertJob({ id: `twx-${vc.id}`, kind: 'interp', label, status: 'done', progress: 1 })
+      toast({ kind: 'success', title: `Twixtor bake done (${F}× frames, ${nt.rife ? 'RIFE neural' : 'GPU optical flow'})`, detail: 'Your speed curve is kept — the slow parts now have real in-between frames.' })
+    } catch (e) {
+      upsertJob({ id: `twx-${vc.id}`, kind: 'interp', label, status: 'error', progress: 0 })
+      toast({ kind: 'error', title: 'Twixtor bake failed', detail: e instanceof Error ? e.message : String(e) })
+    } finally { setBaking(null) }
   }
 
   const toggleInterpolation = async () => {
@@ -224,6 +268,16 @@ export function SpeedPanel() {
                 <div className="text-[10px] text-zinc-500 mt-1">{interpMsg}</div>
               </div>
             )}
+            <div className="mt-3 pt-3 border-t border-white/10">
+              <div className="flex items-center gap-2">
+                <Film size={14} className="text-amber-400" />
+                <div className="flex-1 text-xs text-zinc-200">Twixtor bake — {nt.rife ? 'RIFE 4.6 neural network' : 'GPU optical flow'}</div>
+                <button className="text-[11px] px-3 py-1.5 rounded-lg font-medium gbtn gbtn-accent flex items-center gap-1" onClick={() => void bakeTwixtor()} disabled={baking !== null}>
+                  {baking !== null && <Loader2 size={11} className="animate-spin" />}{baking !== null ? `${Math.round(baking * 100)}%` : 'Bake'}
+                </button>
+              </div>
+              <p className="text-[10px] text-zinc-500 mt-1">Renders the clip with 2–8× real in-between frames (as many as your slowest speed needs) and keeps your speed curve — final-quality slow motion like Twixtor.{nt.rife ? '' : ' RIFE needs the desktop app.'}</p>
+            </div>
             <p className="text-[10px] text-zinc-600 mt-2">
               Real pyramidal Horn–Schunck optical flow (forward + backward) with occlusion checks and bidirectional GPU warping. Honest note: dramatically smoother than frame blending, but it is motion interpolation — not neural Twixtor/RIFE quality. No cloud model claims.
             </p>

@@ -44,6 +44,7 @@ class MediaManagerImpl implements SourceProvider {
   }
 
   registerAsset(meta: AssetMeta) {
+    if (meta.missingPath || !meta.url) return // offline footage: nothing to decode until relinked
     this.assets.set(meta.id, meta)
   }
 
@@ -83,13 +84,25 @@ class MediaManagerImpl implements SourceProvider {
     this.assets.delete(assetId)
   }
 
+  /**
+   * Clips of the same footage that show the same source frame at every moment
+   * (duplicated layers for effects, the AI cut-out copy…) share ONE decoder.
+   * Each used to open its own <video>: 5 duplicates = 5 decoders → choppy preview.
+   */
+  decoderKey(clip: VideoClip): string {
+    if (clip.timeRemap || clip.reverse) return clip.id
+    const sp = clip.speed || 1
+    return `sync:${(clip.start - (clip.inPoint ?? 0) / sp).toFixed(3)}:${sp.toFixed(4)}`
+  }
+
   /** Get (or create) the video element used by a specific clip. */
   getElement(clip: VideoClip): HTMLVideoElement | null {
     const asset = this.assets.get(clip.assetId)
     if (!asset) return null
     let pool = this.pools.get(clip.assetId)
     if (!pool) { pool = new Map(); this.pools.set(clip.assetId, pool) }
-    let entry = pool.get(clip.id)
+    const key = this.decoderKey(clip)
+    let entry = pool.get(key)
     if (!entry) {
       // Enforce active element budget (mobile memory): recycle least-recently-used
       const allEntries: { key: string; poolKey: string; e: PoolEntry }[] = []
@@ -115,7 +128,7 @@ class MediaManagerImpl implements SourceProvider {
       // iOS: must call load() after setting src
       el.load()
       entry = { el, pendingSeek: null, lastSeekedTime: -1, lastUse: performance.now() }
-      pool.set(clip.id, entry)
+      pool.set(key, entry)
     }
     entry.lastUse = performance.now()
     return entry.el

@@ -239,13 +239,14 @@ export function GraphEditor() {
 
   const setEasing = (easing: EasingName) => {
     if (!selKf) return
+    // every selected keyframe (multi-selection), not just the last one clicked
+    const st = useEditorStore.getState()
+    const ids = new Set(st.selectedKeyframeIds.length ? st.selectedKeyframeIds : [selKf.id])
     mutate(d => {
-      const c = d.clips.find(c => c.id === clip!.id)
-      const kf = c?.keyframes.find(t => t.property === prop)?.keyframes.find(k => k.id === selKf.id)
-      if (!kf) return
-      kf.easing = easing
-      if (easing === 'bezier' && !kf.handles) {
-        kf.handles = [{ x: 0.33, y: 0.33 }, { x: 0.67, y: 0.67 }]
+      for (const c of d.clips) for (const tr of c.keyframes) for (const kf of tr.keyframes) {
+        if (!ids.has(kf.id)) continue
+        kf.easing = easing
+        if (easing === 'bezier' && !kf.handles) kf.handles = [{ x: 0.33, y: 0.33 }, { x: 0.67, y: 0.67 }]
       }
     })
   }

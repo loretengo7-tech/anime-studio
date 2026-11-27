@@ -27,7 +27,10 @@ export function renderTextCanvas(clip: TextClip, localTime: number, fps: number)
   const t = clip.text
   const animDur = Math.max(0.01, t.animationDuration)
   const stagger = Math.max(0, Math.min(0.9, t.stagger ?? 0))
-  const frame = Math.floor(localTime * fps)
+  // only animated text depends on the frame; static text is drawn ONCE
+  // (it used to be redrawn + re-uploaded to the GPU on every frame)
+  const animated = !!t.animation && t.animation !== 'none' && localTime <= animDur * (1 + stagger * Math.max(1, t.content.length)) + 0.5
+  const frame = animated ? Math.floor(localTime * fps) : -1
   const grad = t.gradient
   const sig = [
     clip.id, frame, t.content, t.size, t.color, t.font, t.weight,
@@ -51,7 +54,9 @@ export function renderTextCanvas(clip: TextClip, localTime: number, fps: number)
   const W = Math.max(8, Math.ceil(maxW + pad * 2))
   const H = Math.max(8, Math.ceil(lines.length * t.size * 1.3 + pad * 2))
   let canvas: HTMLCanvasElement
-  if (cached && cached.canvas.width >= W && cached.canvas.height >= H) {
+  // FIX: the canvas must be EXACTLY the text block. Re-using a bigger one after
+  // shortening the text changed the layer's size/anchor → text jumped around.
+  if (cached && cached.canvas.width === W && cached.canvas.height === H) {
     canvas = cached.canvas
     const ctx = canvas.getContext('2d')!
     ctx.clearRect(0, 0, canvas.width, canvas.height)
@@ -216,6 +221,7 @@ export function renderTextCanvas(clip: TextClip, localTime: number, fps: number)
   })
   ctx.restore()
 
+  ;(canvas as HTMLCanvasElement & { __asVer?: number }).__asVer = ((canvas as HTMLCanvasElement & { __asVer?: number }).__asVer ?? 0) + 1
   cache.set(clip.id, { canvas, sig })
   return canvas
 }

@@ -90,9 +90,10 @@ export const useExtStore = create<ExtState>((set, get) => ({
     } catch { set({ loaded: true }) }
   },
   install: async (file) => {
-    const ext = await parseExtension(file)
-    await idbPut(ext)
-    const list = [...get().list.filter(e => e.id !== ext.id), ext]
+    const exts = await parseExtension(file)
+    for (const e of exts) await idbPut(e)
+    const ext = exts[0]
+    const list = [...get().list.filter(e => !exts.some(x => x.id === e.id)), ...exts]
     // dock its first panel right away (AE shows new panels via Window > Extensions)
     const first = ext.panels.find(p => p.type === 'Panel') ?? ext.panels[0]
     const docked = first ? [...new Set([...get().docked, `${ext.id}|${first.id}`])] : get().docked
@@ -131,17 +132,39 @@ export const useExtStore = create<ExtState>((set, get) => ({
 
 function num(v: string | null | undefined, d: number) { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d }
 
-async function parseExtension(file: File): Promise<InstalledExt> {
+const SCRIPT_EXT = /\.(jsx|js|jsxinc|jsinc|jsxbin)$/i
+const enc = new TextEncoder(), decT = new TextDecoder()
+
+/** Inline `#include "x.jsx"` / `//@include 'x'` from the bundle (recursive, once per file). */
+export function resolveIncludes(code: string, path: string, files: Record<string, Uint8Array>, seen = new Set<string>()): string {
+  seen.add(path)
+  const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : ''
+  const norm = (p: string) => { const out: string[] = []; for (const seg of p.split('/')) { if (seg === '..') out.pop(); else if (seg && seg !== '.') out.push(seg) } return out.join('/') }
+  return code.replace(/^[ \t]*(?:#|\/\/@)include\s+["']([^"']+)["'];?[ \t]*$/gm, (line, inc: string) => {
+    const want = norm(dir + inc.replace(/\\/g, '/'))
+    const key = files[want] ? want : Object.keys(files).find(k => k.toLowerCase() === want.toLowerCase() || k.toLowerCase().endsWith('/' + inc.split(/[\\/]/).pop()!.toLowerCase()))
+    if (!key || seen.has(key)) return `// ${line.trim()} (not found in bundle)`
+    return `// ---- ${inc}\n${resolveIncludes(decT.decode(files[key]), key, files, seen)}\n// ---- end ${inc}`
+  })
+}
+
+function isJsxbin(data: Uint8Array) { return /@JSXBIN@ES@/.test(decT.decode(data.subarray(0, 4096))) }
+function scriptExt(name: string, path: string, files: Record<string, Uint8Array>): InstalledExt {
+  if (isJsxbin(files[path])) throw new Error(`${path.split('/').pop()} is compiled ExtendScript (.jsxbin). It is encrypted bytecode that only Adobe's engine runs — install the .jsx version or the .zxp panel instead.`)
+  const code = resolveIncludes(decT.decode(files[path]), path, files)
+  return {
+    id: `script.${name.replace(/[^\w.-]+/g, '_')}`, kind: 'script', name, version: '', installedAt: Date.now(),
+    panels: [{ id: 'main', name, main: '', query: '', type: 'Panel', menu: name, width: 300, height: 420 }],
+    scriptPath: path, files: { [path]: enc.encode(code) },
+  }
+}
+
+async function parseExtension(file: File): Promise<InstalledExt[]> {
   const lower = file.name.toLowerCase()
-  if (lower.endsWith('.jsxbin')) throw new Error('.jsxbin is compiled (encrypted) ExtendScript — only Adobe\'s engine can run it. Ask the author for the .jsx or the .zxp panel.')
-  if (lower.endsWith('.jsx') || lower.endsWith('.js')) {
+  if (lower.endsWith('.ffx')) throw new Error('.ffx is an animation preset — apply it with Animation › Apply Animation Preset… (it goes on the selected layer)')
+  if (SCRIPT_EXT.test(lower)) {
     const data = new Uint8Array(await file.arrayBuffer())
-    const name = file.name.replace(/\.(jsx|js)$/i, '')
-    return {
-      id: `script.${name.replace(/[^\w.-]+/g, '_')}`, kind: 'script', name, version: '', installedAt: Date.now(),
-      panels: [{ id: 'main', name, main: '', query: '', type: 'Panel', menu: name, width: 300, height: 420 }],
-      scriptPath: file.name, files: { [file.name]: data },
-    }
+    return [scriptExt(file.name.replace(SCRIPT_EXT, ''), file.name, { [file.name]: data })]
   }
   const entries = await readZip(await file.arrayBuffer())
   const files: Record<string, Uint8Array> = {}
@@ -153,14 +176,14 @@ async function parseExtension(file: File): Promise<InstalledExt> {
   let root = ''
   const manifestName = Object.keys(files).find(n => /(^|\/)CSXS\/manifest\.xml$/i.test(n))
   if (!manifestName) {
-    const jsx = Object.keys(files).find(n => /\.jsx$/i.test(n))
-    if (jsx) {
-      const name = jsx.split('/').pop()!.replace(/\.jsx$/i, '')
-      return {
-        id: `script.${name.replace(/[^\w.-]+/g, '_')}`, kind: 'script', name, version: '', installedAt: Date.now(),
-        panels: [{ id: 'main', name, main: '', query: '', type: 'Panel', menu: name, width: 300, height: 420 }],
-        scriptPath: jsx, files: { [jsx]: files[jsx] },
-      }
+    // a zip of scripts: install every top-level script (.jsxinc files are only includes)
+    const scripts = Object.keys(files).filter(n => /\.(jsx|js|jsxbin)$/i.test(n) && !/(^|\/)(node_modules|__MACOSX)\//.test(n))
+    if (scripts.length) {
+      const out: InstalledExt[] = []
+      const errs: string[] = []
+      for (const p of scripts) { try { out.push(scriptExt(p.split('/').pop()!.replace(SCRIPT_EXT, ''), p, files)) } catch (e) { errs.push(e instanceof Error ? e.message : String(e)) } }
+      if (!out.length) throw new Error(errs[0] ?? 'No runnable scripts in this archive')
+      return out
     }
     throw new Error('No CSXS/manifest.xml found — this is not an After Effects extension (.zxp)')
   }
@@ -192,5 +215,6 @@ async function parseExtension(file: File): Promise<InstalledExt> {
   }
   if (!panels.length) throw new Error('The manifest declares no panels')
   const name = panels.find(p => p.menu)?.menu || bundleId
-  return { id: bundleId, kind: 'cep', name, version, panels, scriptPath, files: rel, installedAt: Date.now() }
+  if (scriptPath && rel[scriptPath]) rel[scriptPath] = enc.encode(resolveIncludes(decT.decode(rel[scriptPath]), scriptPath, rel))
+  return [{ id: bundleId, kind: 'cep', name, version, panels, scriptPath, files: rel, installedAt: Date.now() }]
 }

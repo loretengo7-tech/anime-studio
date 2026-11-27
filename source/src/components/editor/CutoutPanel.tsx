@@ -86,6 +86,7 @@ export function CutoutPanel() {
       d.tracks.splice(Math.max(0, ti), 0, topTrack, txtTrack)
       top.trackId = topTrack.id
       top.muted = true // audio stays on the original
+      top.mediaLink = src.mediaLink || src.id // same decoder as the plate: never out of sync
       src.effects = src.effects.filter(e => e.type !== 'sx_cutout')
       textId = uid('clip')
       d.clips.push(top, {
