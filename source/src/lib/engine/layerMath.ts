@@ -117,7 +117,7 @@ export function layerCenterNDC(doc: ProjectDoc, clip: Clip, compTime: number, co
     m = mat3Mul(mat3Translate(x, y), m)
     m = mat3Mul(mat3Scale(scale, scale), m)
     m = mat3Mul(mat3Rotate(rot), m)
-    m = mat3Mul(mat3Translate(0, 0), m)             // anchor 0 → pivot at center
+    m = mat3Mul(mat3Translate(-comp.width / 2, -comp.height / 2), m) // quad center → pivot (the layer's position)
     m = mat3Mul(mat3Scale(comp.width, comp.height), m)
     m = mat3Mul(C, m)
   }

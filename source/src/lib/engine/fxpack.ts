@@ -43,6 +43,18 @@ void main() {
   }
   gl_FragColor = acc / ws;
 }`
+// separable min/max (erode/dilate) for matte morphology
+const MORPH = (op: string) => HEAD + `
+void main() {
+  vec2 px = 1.0 / u_res;
+  float v = T(u_tex, v_uv).r;
+  if (u_radius > 0.01) for (int i = -8; i <= 8; i++) {
+    float s = T(u_tex, v_uv + u_dir * float(i) * (u_radius / 8.0) * px).r;
+    v = ${op}(v, s);
+  }
+  gl_FragColor = vec4(vec3(v), 1.0);
+}`
+const MORPH_MAX = MORPH('max'), MORPH_MIN = MORPH('min')
 const blurPair = (scale: number, radius: (p: Record<string, number>) => number): Pass[] => [
   { fs: BLUR, scale, dir: [1, 0], radius },
   { fs: BLUR, scale, dir: [0, 1], radius },
@@ -344,14 +356,78 @@ const EFFECTS: PackEffect[] = [
       gl_FragColor=vec4(mix(c.rgb,im,u_p_amount),c.a); }` }],
   },
   {
+    // AI cut-out refined like a keyer (Keylight-style controls): matte morphology,
+    // hole filling, edge smoothing, screen-colour key assist, spill suppression
+    // and edge colour decontamination against the local background.
     def: {
       type: 'sx_cutout', name: 'AI Cut-out', category: 'anime',
-      description: 'Character cut-out from the AI matte. Bake it in the Cut-out panel (tap the character), then refine here.',
-      params: [P('choke', 'Choke', 0.05, 0.95, 0.01, 0.5), P('feather', 'Feather', 0.01, 0.5, 0.01, 0.12), P('invert', 'Invert (keep background)', 0, 1, 1, 0), P('view', 'Show Matte', 0, 1, 1, 0)],
+      description: 'Character cut-out from the AI matte. Bake it in the Cut-out panel (tap the character), then refine it here like a chroma key.',
+      params: [
+        P('choke', 'Threshold', 0.05, 0.95, 0.01, 0.5), P('feather', 'Softness', 0.01, 0.5, 0.01, 0.12),
+        P('grow', 'Grow / Shrink (px)', -20, 20, 0.5, 0), P('fill', 'Fill Holes (px)', 0, 40, 0.5, 4), P('smooth', 'Smooth Edges (px)', 0, 20, 0.5, 2),
+        P('keyMode', 'Screen Key (0 Off · 1 Auto · 2 Green · 3 Blue)', 0, 3, 1, 1), P('keyAssist', 'Key Strength', 0, 1, 0.01, 0.6),
+        P('despill', 'Spill Suppression', 0, 1, 0.01, 0.6), P('decontam', 'Edge Color Fix', 0, 1, 0.01, 0.5), P('edgeR', 'Edge Sample Radius (px)', 2, 40, 1, 10),
+        P('temporal', 'Temporal Smoothing', 0, 1, 0.01, 0.35),
+        P('invert', 'Invert (keep background)', 0, 1, 1, 0), P('view', 'View (0 Final · 1 Matte · 2 Status)', 0, 2, 1, 0),
+      ],
     },
-    passes: [{ input: 'orig', aux: 'matte', fs: HEAD + `uniform float u_p_choke, u_p_feather, u_p_invert, u_p_view;
-      void main(){ vec4 c=T(u_orig,v_uv); float m=T(u_aux,v_uv).r; float a=smoothstep(u_p_choke-u_p_feather,u_p_choke+u_p_feather,m);
-      if(u_p_invert>0.5) a=1.0-a; if(u_p_view>0.5){ gl_FragColor=vec4(vec3(a),1.0); return; } gl_FragColor=vec4(c.rgb,c.a*a); }` }],
+    passes: [
+      { fs: MORPH_MAX, scale: 0.5, input: 'matte', dir: [1, 0], radius: p => (p.fill ?? 4) + Math.max(0, p.grow ?? 0) },
+      { fs: MORPH_MAX, scale: 0.5, dir: [0, 1], radius: p => (p.fill ?? 4) + Math.max(0, p.grow ?? 0) },
+      { fs: MORPH_MIN, scale: 0.5, dir: [1, 0], radius: p => (p.fill ?? 4) + Math.max(0, -(p.grow ?? 0)) },
+      { fs: MORPH_MIN, scale: 0.5, dir: [0, 1], radius: p => (p.fill ?? 4) + Math.max(0, -(p.grow ?? 0)) },
+      { fs: BLUR, scale: 0.5, dir: [1, 0], radius: p => p.smooth ?? 2 },
+      { fs: BLUR, scale: 0.5, dir: [0, 1], radius: p => p.smooth ?? 2 },
+      { input: 'orig', aux: 5, radius: p => p.edgeR ?? 10, fs: HEAD + `uniform float u_p_choke, u_p_feather, u_p_keyMode, u_p_keyAssist, u_p_despill, u_p_decontam, u_p_invert, u_p_view;
+      vec2 cbcr(vec3 c) { return vec2(-0.1687*c.r - 0.3313*c.g + 0.5*c.b, 0.5*c.r - 0.4187*c.g - 0.0813*c.b); }
+      void main(){
+        vec4 c = T(u_orig, v_uv);
+        float m = T(u_aux, v_uv).r;
+        float a = smoothstep(u_p_choke - u_p_feather, u_p_choke + u_p_feather, m);
+        // local background colour: ring samples where the matte says "background"
+        vec2 px = 1.0 / u_res;
+        vec3 bg = vec3(0.0); float bw = 0.0;
+        for (int i = 0; i < 16; i++) {
+          float ang = float(i) * 0.3927;
+          for (int r = 1; r <= 2; r++) {
+            vec2 o = vec2(cos(ang), sin(ang)) * u_radius * float(r) * 0.5 * px;
+            float mm = T(u_aux, v_uv + o).r;
+            float w = 1.0 - smoothstep(0.05, 0.3, mm);
+            bg += T(u_orig, v_uv + o).rgb * w; bw += w;
+          }
+        }
+        bool hasBg = bw > 0.5;
+        bg = hasBg ? bg / bw : vec3(0.0);
+        // screen key colour: auto = local background, or a pure green/blue screen
+        vec3 key = u_p_keyMode < 1.5 ? bg : u_p_keyMode < 2.5 ? vec3(0.1, 0.75, 0.2) : vec3(0.1, 0.25, 0.85);
+        bool keyOn = u_p_keyMode > 0.5 && (u_p_keyMode > 1.5 || hasBg);
+        if (keyOn) {
+          // chroma distance in CbCr (like a colour keyer); only trust saturated keys
+          vec2 kc = cbcr(key); float ks = length(kc);
+          if (ks > 0.06) {
+            float d = length(cbcr(c.rgb) - kc) / ks;
+            float km = smoothstep(0.25, 0.75, d);
+            a = mix(a, a * km, u_p_keyAssist);
+          }
+        }
+        vec3 col = c.rgb;
+        // edge colour decontamination: remove the background that bled into soft edges
+        if (hasBg && a > 0.02 && a < 0.98) {
+          vec3 un = (col - (1.0 - a) * bg) / max(a, 0.05);
+          col = mix(col, clamp(un, 0.0, 1.0), u_p_decontam);
+        }
+        // spill suppression toward the dominant screen channel
+        vec3 sk = keyOn ? key : bg;
+        if (u_p_despill > 0.0 && (keyOn || hasBg)) {
+          if (sk.g > sk.r && sk.g > sk.b) { float lim = max(col.r, col.b) * 0.5 + (col.r + col.b) * 0.25; col.g = mix(col.g, min(col.g, lim), u_p_despill); }
+          else if (sk.b > sk.r && sk.b > sk.g) { float lim = max(col.r, col.g) * 0.5 + (col.r + col.g) * 0.25; col.b = mix(col.b, min(col.b, lim), u_p_despill); }
+        }
+        if (u_p_invert > 0.5) a = 1.0 - a;
+        if (u_p_view > 1.5) { gl_FragColor = vec4(a > 0.98 ? vec3(1.0) : a < 0.02 ? vec3(0.0) : vec3(0.15, 0.55, 1.0) * (0.4 + 0.6 * a), 1.0); return; }
+        if (u_p_view > 0.5) { gl_FragColor = vec4(vec3(a), 1.0); return; }
+        gl_FragColor = vec4(col, c.a * a);
+      }` },
+    ],
   },
   {
     def: {
@@ -449,7 +525,7 @@ export class FxChain {
       if (!fx) continue
       if (inst.type === 'sx_cutout' && !extra.matte) continue // not baked yet → pass-through
       const params: Record<string, number> = {}
-      for (const pd of fx.def.params) params[pd.key] = evalEffectParam(inst, pd.key, localTime)
+      for (const pd of fx.def.params) params[pd.key] = evalEffectParam(inst, pd.key, localTime) ?? pd.default // older projects miss newer params
       const orig = cur
       const outs: WebGLTexture[] = []
       let prev = cur

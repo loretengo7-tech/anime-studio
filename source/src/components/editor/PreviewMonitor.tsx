@@ -206,6 +206,12 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
   const [canvasStyle, setCanvasStyle] = useState<React.CSSProperties>({})
   const [fitPct, setFitPct] = useState(1)
   const [cssSize, setCssSize] = useState({ w: 0, h: 0 })
+  const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 })
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  // pasteboard margins: how far the overlays extend past the comp so tools work in the dark area around it
+  const pb = ae && cssSize.w > 0
+    ? { mx: Math.min(4000, Math.max(0, Math.ceil((wrapSize.w - cssSize.w) / 2 + Math.abs(pan.x)) + 4)), my: Math.min(4000, Math.max(0, Math.ceil((wrapSize.h - cssSize.h) / 2 + Math.abs(pan.y)) + 4)) }
+    : { mx: 0, my: 0 }
   useEffect(() => {
     const compute = () => {
       const wrap = wrapRef.current
@@ -220,6 +226,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
       setFitPct(w / Math.max(1, doc.composition.width))
       setCanvasStyle({ width: w * scale, height: h * scale })
       setCssSize({ w: w * scale, h: h * scale })
+      setWrapSize({ w: wrap.clientWidth, h: wrap.clientHeight })
     }
     compute()
     const ro = new ResizeObserver(compute)
@@ -250,8 +257,8 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     ).length
     : 0
 
-  const compFromEvent = (e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
-    const rect = e.currentTarget.getBoundingClientRect()
+  const compFromEvent = (e: React.PointerEvent<HTMLElement>): { x: number; y: number } => {
+    const rect = (canvasRef.current ?? e.currentTarget).getBoundingClientRect()
     const nx = (e.clientX - rect.left) / (rect.width || 1)
     const ny = (e.clientY - rect.top) / (rect.height || 1)
     return {
@@ -265,7 +272,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
 
   const onMaskPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!penMask || !doc || !selectedClip) return
-    const rect = e.currentTarget.getBoundingClientRect()
+    const rect = (canvasRef.current ?? e.currentTarget).getBoundingClientRect()
     const cx = e.clientX - rect.left
     const cy = e.clientY - rect.top
     const comp = doc.composition
@@ -359,13 +366,16 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     const comp = doc.composition
     const w = Math.max(2, Math.round(cssSize.w))
     const h = Math.max(2, Math.round(cssSize.h))
-    if (cv.width !== w || cv.height !== h) {
-      cv.width = w
-      cv.height = h
+    // the overlay extends over the pasteboard (dark area around the comp) so mask points can live there
+    const W = w + 2 * pb.mx, H = h + 2 * pb.my
+    if (cv.width !== W || cv.height !== H) {
+      cv.width = W
+      cv.height = H
     }
     const ctx = cv.getContext('2d')
     if (!ctx) return
-    ctx.clearRect(0, 0, w, h)
+    ctx.setTransform(1, 0, 0, 1, pb.mx, pb.my)
+    ctx.clearRect(-pb.mx, -pb.my, W, H)
     const toCss = (x: number, y: number): [number, number] => [
       (x / comp.width + 0.5) * w,
       (0.5 - y / comp.height) * h,
@@ -444,9 +454,19 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
         ctx.beginPath()
         pts.forEach((p, i) => {
           const [x, y] = toCssPt(p)
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+          if (i === 0) { ctx.moveTo(x, y); return }
+          const q = pts[i - 1]
+          const [c1x, c1y] = toCssPt({ x: q.x + (q.hOut?.x ?? 0), y: q.y + (q.hOut?.y ?? 0) })
+          const [c2x, c2y] = toCssPt({ x: p.x + (p.hIn?.x ?? 0), y: p.y + (p.hIn?.y ?? 0) })
+          ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x, y)
         })
-        ctx.closePath()
+        {
+          const q = pts[pts.length - 1], p = pts[0]
+          const [c1x, c1y] = toCssPt({ x: q.x + (q.hOut?.x ?? 0), y: q.y + (q.hOut?.y ?? 0) })
+          const [c2x, c2y] = toCssPt({ x: p.x + (p.hIn?.x ?? 0), y: p.y + (p.hIn?.y ?? 0) })
+          const [x, y] = toCssPt(p)
+          ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x, y)
+        }
         ctx.stroke()
         ctx.fillStyle = 'rgba(56, 189, 248, 0.9)'
         for (let i = 0; i < pts.length; i++) {
@@ -470,7 +490,7 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     // null layer markers (AE-style controller overlays) — always on top
     drawNullMarkers(ctx, w, h)
     void nullTick
-  }, [cssSize, trackOverlay, trackerPick, doc, selectedClipId, maskEditActive, penMask, selectedClip, dragPoints, drawTick, nullTick, dragNull])
+  }, [cssSize, trackOverlay, trackerPick, doc, selectedClipId, maskEditActive, penMask, selectedClip, dragPoints, drawTick, nullTick, dragNull, pb.mx, pb.my])
 
   // ---- tracker pick taps ----
   const onCanvasPointer = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -492,7 +512,6 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
   const setGuides = useUIStore(s => s.setGuides)
   const setCursor = useUIStore(s => s.setCursor)
   const setFocus = useUIStore(s => s.setFocus)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
   const [penPts, setPenPts] = useState<{ x: number; y: number }[]>([])
   const [rubber, setRubber] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const aeOverlayRef = useRef<HTMLCanvasElement>(null)
@@ -593,12 +612,13 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
     if (!cv || !ae) return
     const d = useEditorStore.getState().doc
     const w = Math.max(2, Math.round(cssSize.w)), h = Math.max(2, Math.round(cssSize.h))
+    const W = w + 2 * pb.mx, H = h + 2 * pb.my
     const dpr = Math.min(2, window.devicePixelRatio || 1)
-    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr }
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr) }
     const ctx = cv.getContext('2d')
     if (!ctx) return
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, w, h)
+    ctx.setTransform(dpr, 0, 0, dpr, pb.mx * dpr, pb.my * dpr)
+    ctx.clearRect(-pb.mx, -pb.my, W, H)
     const g = useUIStore.getState().guides
     if (g.grid) {
       ctx.strokeStyle = 'rgba(255,255,255,0.18)'
@@ -831,6 +851,31 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
       setRubber(null)
       const { w, h } = cssPt(e)
       const comp = doc.composition
+      // AE: with a footage/solid/text layer selected, the Rectangle/Ellipse tools draw a MASK on it
+      const selId = useEditorStore.getState().selectedClipId
+      const selC = selId ? doc.clips.find(c => c.id === selId) : null
+      if (r && selC && !['shape', 'null', 'camera', 'audio'].includes(selC.kind) && Math.abs(r.x1 - r.x0) > 4 && Math.abs(r.y1 - r.y0) > 4) {
+        const toComp = (cx: number, cy: number) => ({ x: Math.round((cx / w - 0.5) * comp.width), y: Math.round((0.5 - cy / h) * comp.height) })
+        const a = toComp(Math.min(r.x0, r.x1), Math.min(r.y0, r.y1)), b = toComp(Math.max(r.x0, r.x1), Math.max(r.y0, r.y1))
+        let pts: MaskPoint[]
+        if (tool === 'ellipse') {
+          const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2, rx = (b.x - a.x) / 2, ry = (a.y - b.y) / 2, k = 0.5523
+          pts = [
+            { x: cx, y: cy + ry, hIn: { x: -rx * k, y: 0 }, hOut: { x: rx * k, y: 0 } },
+            { x: cx + rx, y: cy, hIn: { x: 0, y: ry * k }, hOut: { x: 0, y: -ry * k } },
+            { x: cx, y: cy - ry, hIn: { x: rx * k, y: 0 }, hOut: { x: -rx * k, y: 0 } },
+            { x: cx - rx, y: cy, hIn: { x: 0, y: -ry * k }, hOut: { x: 0, y: ry * k } },
+          ]
+        } else {
+          pts = [{ x: a.x, y: a.y }, { x: b.x, y: a.y }, { x: b.x, y: b.y }, { x: a.x, y: b.y }]
+        }
+        mutate(dd => {
+          const c = dd.clips.find(c => c.id === selC.id)
+          if (c) c.mask = { shape: 'pen', x: 0, y: 0, width: 1, height: 1, feather: 0.02, invert: false, points: pts }
+        })
+        useEditorStore.getState().setMaskEditing(selC.id)
+        return
+      }
       const id = newLayer(tool === 'ellipse' ? 'ellipse' : 'shape')
       if (id && r) {
         const bw = Math.abs(r.x1 - r.x0) * comp.width / w, bh = Math.abs(r.y1 - r.y0) * comp.height / h
@@ -898,6 +943,14 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
       }}
       onPointerLeave={() => ae && setCursor(null)}
     >
+      {ae && (
+        // pasteboard: the dark area around the comp — pen/shape/mask tools work here too (like AE)
+        <div className="absolute inset-0 touch-none" style={{ cursor: toolCursor }} aria-hidden="true"
+          onPointerDown={e => onMainPointerDown(e as unknown as React.PointerEvent<HTMLCanvasElement>)}
+          onPointerMove={e => onMainPointerMove(e as unknown as React.PointerEvent<HTMLCanvasElement>)}
+          onPointerUp={e => onMainPointerUp(e as unknown as React.PointerEvent<HTMLCanvasElement>)}
+          onPointerCancel={e => onMainPointerUp(e as unknown as React.PointerEvent<HTMLCanvasElement>)} />
+      )}
       <div className="relative" style={{ lineHeight: 0, transform: ae ? `translate(${pan.x}px, ${pan.y}px)` : undefined }}>
         <canvas
           ref={canvasRef}
@@ -914,14 +967,15 @@ export function PreviewMonitor({ ae = false }: { ae?: boolean } = {}) {
         <canvas ref={cacheRef} className={`absolute left-0 top-0 z-[2] pointer-events-none ${ae ? '' : 'rounded-lg'}`} style={{ width: cssSize.w || undefined, height: cssSize.h || undefined, visibility: 'hidden' }} aria-hidden="true" />
         {ae && guides.checker && <div className="absolute inset-0 -z-10 ae-checker" />}
         {ae && (
-          <canvas ref={aeOverlayRef} className="absolute left-0 top-0 z-[4] pointer-events-none" style={{ width: cssSize.w || undefined, height: cssSize.h || undefined }} />
+          <canvas ref={aeOverlayRef} className="absolute z-[4] pointer-events-none" style={{ left: -pb.mx, top: -pb.my, width: (cssSize.w + 2 * pb.mx) || undefined, height: (cssSize.h + 2 * pb.my) || undefined }} />
         )}
         <canvas
           ref={overlayRef}
-          className={`absolute left-0 top-0 z-[5] ${maskEditActive ? 'touch-none' : 'pointer-events-none'}`}
+          className={`absolute z-[5] ${maskEditActive ? 'touch-none' : 'pointer-events-none'}`}
           style={{
-            width: cssSize.w || undefined,
-            height: cssSize.h || undefined,
+            left: -pb.mx, top: -pb.my,
+            width: (cssSize.w + 2 * pb.mx) || undefined,
+            height: (cssSize.h + 2 * pb.my) || undefined,
             ...(trackerPick || maskEditActive ? { cursor: 'crosshair' } : {}),
           }}
           onPointerDown={onMaskPointerDown}

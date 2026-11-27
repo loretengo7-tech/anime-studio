@@ -105,16 +105,30 @@ void main() {
 }
 `
 
-/** Decode flow from RGBA8; scale is px-per-byte. */
+/**
+ * Flow is stored 16-bit per component in RGBA8: rg = high byte, ba = low byte, range ±scale px.
+ * (8-bit storage quantised to 0.5 px: Horn–Schunck updates smaller than that were lost and the
+ * solver stalled.) Decode is linear in the bytes, so bilinear filtering stays exact.
+ * Zero flow = bytes [128, 128, 0, 0].
+ */
 const HS_HELPERS = `
 vec2 decodeFlow(vec4 px, float scale) {
-  return (px.rg * 255.0 - 128.0) / 127.0 * scale;
+  vec2 n = px.rg * 255.0 * 256.0 + px.ba * 255.0;
+  return (n / 32768.0 - 1.0) * scale;
 }
 vec4 encodeFlow(vec2 f, float scale) {
-  vec2 e = clamp(f / scale * 127.0 + 128.0, 0.0, 255.0) / 255.0;
-  return vec4(e, 0.0, 1.0);
+  vec2 n = clamp((f / scale + 1.0) * 32768.0, 0.0, 65535.0);
+  vec2 hi = floor(n / 256.0);
+  vec2 lo = n - hi * 256.0;
+  return vec4(hi / 255.0, lo / 255.0);
 }
 `
+/** CPU-side zero flow texture (see HS_HELPERS encoding). */
+function zeroFlow(w: number, h: number): Uint8Array {
+  const z = new Uint8Array(4 * w * h)
+  for (let i = 0; i < z.length; i += 4) { z[i] = 128; z[i + 1] = 128 }
+  return z
+}
 
 /**
  * One Horn–Schunck iteration.
@@ -140,14 +154,17 @@ void main() {
   // warp B by current estimate
   float b = lum(texture2D(u_texB, clamp(v_uv + f * px, vec2(0.001), vec2(0.999))).rgb);
   float a = lum(texture2D(u_texA, v_uv).rgb);
-  float it = b - a;
-  // derivatives of A (central difference)
-  float ax1 = lum(texture2D(u_texA, clamp(v_uv + vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
-  float ax0 = lum(texture2D(u_texA, clamp(v_uv - vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb);
-  float ay1 = lum(texture2D(u_texA, clamp(v_uv + vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb);
-  float ay0 = lum(texture2D(u_texA, clamp(v_uv - vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb);
-  float ix = (ax1 - ax0) * 0.5 * u_res.x;
-  float iy = (ay1 - ay0) * 0.5 * u_res.y;
+  float it = (b - a) * 255.0;
+  // derivatives of the WARPED second frame (linearisation point of the warping scheme;
+  // using A's gradient here made the iteration diverge on large motion)
+  vec2 w = v_uv + f * px;
+  float ax1 = 0.5 * (lum(texture2D(u_texB, clamp(w + vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb) + lum(texture2D(u_texA, clamp(v_uv + vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb));
+  float ax0 = 0.5 * (lum(texture2D(u_texB, clamp(w - vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb) + lum(texture2D(u_texA, clamp(v_uv - vec2(px.x, 0.0), vec2(0.001), vec2(0.999))).rgb));
+  float ay1 = 0.5 * (lum(texture2D(u_texB, clamp(w + vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb) + lum(texture2D(u_texA, clamp(v_uv + vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb));
+  float ay0 = 0.5 * (lum(texture2D(u_texB, clamp(w - vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb) + lum(texture2D(u_texA, clamp(v_uv - vec2(0.0, px.y), vec2(0.001), vec2(0.999))).rgb));
+  // per-pixel gradients in 0..255 intensity units (flow is in px of this level)
+  float ix = (ax1 - ax0) * 0.5 * 255.0;
+  float iy = (ay1 - ay0) * 0.5 * 255.0;
   // smoothness: weighted average of neighbors (Laplacian term)
   vec2 fn = decodeFlow(texture2D(u_flow, clamp(v_uv + vec2(px.x, 0.0), vec2(0.001), vec2(0.999))), u_scale);
   vec2 fs = decodeFlow(texture2D(u_flow, clamp(v_uv - vec2(px.x, 0.0), vec2(0.001), vec2(0.999))), u_scale);
@@ -156,14 +173,16 @@ void main() {
   vec2 favg = (fn + fs + fe + fw) * 0.25;
   vec2 inc = favg - f;
   float denom = u_alpha2 + ix * ix + iy * iy;
-  vec2 upd = inc - u_lambda * vec2(ix, iy) * it / max(denom, 1e-4);
+  // classic HS: linearise the (warped) brightness constancy around the smoothed estimate
+  float itAvg = it + ix * inc.x + iy * inc.y;
+  vec2 upd = inc - u_lambda * vec2(ix, iy) * itAvg / max(denom, 1e-4);
   gl_FragColor = encodeFlow(f + upd, u_scale);
 }
 `
 
 /** Downsample 4x (box filter) — builds the pyramid. */
 const DOWN_FRAG = `
-precision mediump float;
+precision highp float;
 varying vec2 v_uv;
 uniform sampler2D u_tex;
 uniform vec2 u_outRes;
@@ -180,7 +199,7 @@ void main() {
 
 /** Upsample flow 2x (bilinear). scale doubles toward finer levels. */
 const UPFLOW_FRAG = `
-precision mediump float;
+precision highp float;
 varying vec2 v_uv;
 uniform sampler2D u_flow;
 uniform float u_scaleIn;
@@ -194,7 +213,7 @@ void main() {
 
 /** Render final flow (at working res) down to the storage grid. */
 const STORE_FRAG = `
-precision mediump float;
+precision highp float;
 varying vec2 v_uv;
 uniform sampler2D u_flow;
 ${HS_HELPERS}
@@ -386,43 +405,42 @@ function estimateFlowGPU(
     const texFinest = dir === 'fwd' ? scratch.texA0 : scratch.texB0
     const texOther = dir === 'fwd' ? scratch.texB0 : scratch.texA0
 
-    let flowCur = scratch.flow0
-    let flowNext = scratch.flow1
-
+    // Each pyramid level has its OWN pair of flow textures at that level's exact size.
+    // (Sharing two full-size textures across levels rendered coarse levels into a corner
+    // while sampling the whole texture — the flow came out as garbage.)
+    let flowCur: WebGLTexture = scratch.flowL[levels.length - 1][0]
     for (let li = levels.length - 1; li >= 0; li--) {
       const l = levels[li]
       const scale = scaleAt(li)
+      let src = scratch.flowL[li][0], dst = scratch.flowL[li][1]
       if (li === levels.length - 1) {
         // coarsest: zero-init flow
-        const zero = new Uint8Array(128 * l.w * l.h)
-        gpu.upload(flowCur, zero, l.w, l.h, gl.NEAREST)
+        gpu.upload(src, zeroFlow(l.w, l.h), l.w, l.h, gl.LINEAR)
       } else {
-        // upsample flow from coarser level (flowCur holds coarser result)
+        // upsample flow from the coarser level (×2 in px)
         gl.activeTexture(gl.TEXTURE0)
         gl.bindTexture(gl.TEXTURE_2D, flowCur)
         const scaleIn = scaleAt(li + 1)
         const scaleOut = scaleAt(li)
-        gpu.renderTo(UPFLOW_FRAG, 'upflow', flowNext, l.w, l.h, (_p, L) => {
+        gpu.renderTo(UPFLOW_FRAG, 'upflow', src, l.w, l.h, (_p, L) => {
           gl.uniform1i(L['u_flow']!, 0)
           gl.uniform1f(L['u_scaleIn']!, scaleIn)
           gl.uniform1f(L['u_scaleOut']!, scaleOut)
         })
-        const t = flowCur
-        flowCur = flowNext
-        flowNext = t
       }
       // bind frame textures for this level
       const texFirst = li === 0 ? texFinest : (dir === 'fwd' ? scratch.texA[li] : scratch.texB[li])
       const texSecond = li === 0 ? texOther : (dir === 'fwd' ? scratch.texB[li] : scratch.texA[li])
-      gl.activeTexture(gl.TEXTURE0)
-      gl.bindTexture(gl.TEXTURE_2D, texFirst)
-      gl.activeTexture(gl.TEXTURE1)
-      gl.bindTexture(gl.TEXTURE_2D, texSecond)
-      const iters = Math.max(2, Math.round(tier.iterations * (li === 0 ? 1 : 0.55)))
+      // coarse levels are tiny and carry the large motion: iterate them much more (HS converges slowly)
+      const iters = Math.max(4, Math.round(tier.iterations * (li === 0 ? 1.5 : 4)))
       for (let it = 0; it < iters; it++) {
+        gl.activeTexture(gl.TEXTURE0)
+        gl.bindTexture(gl.TEXTURE_2D, texFirst)
+        gl.activeTexture(gl.TEXTURE1)
+        gl.bindTexture(gl.TEXTURE_2D, texSecond)
         gl.activeTexture(gl.TEXTURE2)
-        gl.bindTexture(gl.TEXTURE_2D, flowCur)
-        gpu.renderTo(HS_FRAG, 'hs', flowNext, l.w, l.h, (_p, L) => {
+        gl.bindTexture(gl.TEXTURE_2D, src)
+        gpu.renderTo(HS_FRAG, 'hs', dst, l.w, l.h, (_p, L) => {
           gl.uniform1i(L['u_texA']!, 0)
           gl.uniform1i(L['u_texB']!, 1)
           gl.uniform1i(L['u_flow']!, 2)
@@ -431,10 +449,11 @@ function estimateFlowGPU(
           gl.uniform1f(L['u_alpha2']!, 400.0)
           gl.uniform1f(L['u_lambda']!, 1.0)
         })
-        const t = flowCur
-        flowCur = flowNext
-        flowNext = t
+        const t = src
+        src = dst
+        dst = t
       }
+      flowCur = src
     }
 
     // final flow is at working res in flowCur — store to grid
@@ -447,19 +466,12 @@ function estimateFlowGPU(
     return gpu.readPixels(gw, gh)
   }
 
-  // WebGL readPixels returns bottom-up; flip rows
-  const flip = (px: Uint8Array): Uint8Array => {
-    const out = new Uint8Array(px.length)
-    const row = gw * 4
-    for (let y = 0; y < gh; y++) {
-      out.set(px.subarray((gh - 1 - y) * row, (gh - y) * row), y * row)
-    }
-    return out
-  }
-
-  const fwdRaw = runDir('fwd')
-  const bwdRaw = runDir('bwd')
-  return { fwd: flip(fwdRaw), bwd: flip(bwdRaw), gw, gh, maxFlow: FLOW_BYTE_SCALE }
+  // No row flip: frames are uploaded without UNPACK_FLIP_Y, so texture row 0 = image top and
+  // readPixels row 0 = the same row. The stored grid is re-uploaded as-is for synthesis, so it
+  // must keep this order (flipping it mirrored the motion field vertically → ghost images).
+  const fwd = runDir('fwd')
+  const bwd = runDir('bwd')
+  return { fwd, bwd, gw, gh, maxFlow: FLOW_BYTE_SCALE }
 }
 
 /** Persistent GPU scratch for a session (allocated once, reused per pair). */
@@ -468,8 +480,7 @@ interface FlowScratch {
   texB0: WebGLTexture
   texA: WebGLTexture[]
   texB: WebGLTexture[]
-  flow0: WebGLTexture
-  flow1: WebGLTexture
+  flowL: [WebGLTexture, WebGLTexture][]
   storeF: WebGLTexture
   storeB: WebGLTexture
   forW: number
@@ -483,8 +494,7 @@ function makeScratch(gpu: GLCtx, W: number, H: number, levels: number, gridW: nu
     texB0: gpu.makeTex(W, H),
     texA: [],
     texB: [],
-    flow0: gpu.makeTex(W, H),
-    flow1: gpu.makeTex(W, H),
+    flowL: [[gpu.makeTex(W, H), gpu.makeTex(W, H)]],
     storeF: gpu.makeTex(gridW, gridH),
     storeB: gpu.makeTex(gridW, gridH),
     forW: W,
@@ -497,6 +507,7 @@ function makeScratch(gpu: GLCtx, W: number, H: number, levels: number, gridW: nu
     h = Math.max(8, Math.floor(h / 2))
     s.texA[i] = gpu.makeTex(w, h)
     s.texB[i] = gpu.makeTex(w, h)
+    s.flowL[i] = [gpu.makeTex(w, h), gpu.makeTex(w, h)]
   }
   return s
 }
@@ -518,29 +529,30 @@ uniform float u_scale;       // flow decode scale (px @ working res)
 uniform float u_workW;
 uniform float u_workH;
 ${HS_HELPERS}
+vec2 F(vec2 uv) { return decodeFlow(texture2D(u_flowF, clamp(uv, vec2(0.0), vec2(1.0))), u_scale) / vec2(u_workW, u_workH); }
+vec2 Bw(vec2 uv) { return decodeFlow(texture2D(u_flowB, clamp(uv, vec2(0.0), vec2(1.0))), u_scale) / vec2(u_workW, u_workH); }
 void main() {
-  vec2 px = 1.0 / u_res;
-  // flow fields are stored at grid res — sample smoothly in working-res space
-  vec2 fuv = v_uv;
-  vec4 fF = texture2D(u_flowF, fuv);
-  vec4 fB = texture2D(u_flowB, fuv);
-  // decode: stored flow is in working-res px; convert to uv units
-  vec2 fwd = decodeFlow(fF, u_scale) / vec2(u_workW, u_workH);
-  vec2 bwd = decodeFlow(fB, u_scale) / vec2(u_workW, u_workH);
-  // backward warp both frames
-  vec2 pA = v_uv + fwd * u_t;
-  vec2 pB = v_uv - bwd * (1.0 - u_t);
+  vec2 x = v_uv;
+  // A point p of frame A sits at p + t·F(p) at time t → solve p for this pixel (fixed point).
+  vec2 f = F(x);
+  for (int i = 0; i < 4; i++) f = F(x - u_t * f);
+  vec2 pA = x - u_t * f;
+  // Same from B's side: q + (1−t)·Bw(q) = x.
+  vec2 g = Bw(x);
+  for (int i = 0; i < 4; i++) g = Bw(x - (1.0 - u_t) * g);
+  vec2 pB = x - (1.0 - u_t) * g;
   vec3 ca = texture2D(u_texA, clamp(pA, vec2(0.001), vec2(0.999))).rgb;
   vec3 cb = texture2D(u_texB, clamp(pB, vec2(0.001), vec2(0.999))).rgb;
-  // forward-backward consistency → occlusion confidence
-  vec2 check = texture2D(u_flowB, clamp(pA, vec2(0.001), vec2(0.999))).rg;
-  vec2 bwdAtWarped = (check * 255.0 - 128.0) / 127.0 * u_scale / vec2(u_workW, u_workH);
-  float mismatch = length(fwd + bwdAtWarped);
-  float occ = smoothstep(0.004, 0.02, mismatch); // 1 = likely occluded
-  // motion-weighted blend with occlusion fallback to crossfade
-  float wA = mix(u_t, 0.5, occ);
-  vec3 col = mix(ca, cb, wA);
-  // slight sharpening of the synthesized seam for crisp anime lines
+  // forward/backward consistency → occlusion (a pixel visible in only one frame)
+  float pxLen = 1.0 / max(u_workW, u_workH);
+  float occA = smoothstep(1.5, 4.0, length(f + Bw(pA + f)) / pxLen);
+  float occB = smoothstep(1.5, 4.0, length(g + F(pB + g)) / pxLen);
+  float wA = (1.0 - u_t) * (1.0 - occA) + 1e-3;
+  float wB = u_t * (1.0 - occB) + 1e-3;
+  vec3 col = (ca * wA + cb * wB) / (wA + wB);
+  // both unreliable: plain crossfade (never worse than blending)
+  float both = occA * occB;
+  col = mix(col, mix(ca, cb, u_t), both);
   gl_FragColor = vec4(col, 1.0);
 }
 `
@@ -895,8 +907,9 @@ class SessionImpl implements InterpSession {
     gl.uniform2f(L['u_res']!, outW, outH)
     gl.uniform1f(L['u_t']!, t)
     gl.uniform1f(L['u_scale']!, FLOW_BYTE_SCALE)
-    gl.uniform1f(L['u_workW']!, flow?.gw ?? this.workingW)
-    gl.uniform1f(L['u_workH']!, flow?.gh ?? this.workingH)
+    // stored flow vectors are in WORKING-res pixels (the grid only resamples the field)
+    gl.uniform1f(L['u_workW']!, this.workingW)
+    gl.uniform1f(L['u_workH']!, this.workingH)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
     gl.deleteBuffer(buf)
 
@@ -905,10 +918,10 @@ class SessionImpl implements InterpSession {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     const { canvas, ctx } = this.outCanvas(outW, outH)
     const img = ctx.createImageData(outW, outH)
-    const row = outW * 4
-    for (let y = 0; y < outH; y++) {
-      img.data.set(pixels.subarray((outH - 1 - y) * row, (outH - y) * row), y * row)
-    }
+    // Frames were uploaded WITHOUT UNPACK_FLIP_Y (texture v=0 = image top) and the quad maps
+    // v=0 to framebuffer row 0, so readPixels rows are already in image (top-down) order.
+    // (Flipping here produced upside-down in-between frames.)
+    img.data.set(pixels)
     ctx.putImageData(img, 0, 0)
     return canvas
   }
@@ -931,8 +944,8 @@ class SessionImpl implements InterpSession {
     const bwdTex = gpu.makeTex()
     const gw = flow?.gw ?? 8
     const gh = flow?.gh ?? 8
-    gpu.upload(fwdTex, flow?.fwd ?? new Uint8Array(128 * gw * gh), gw, gh, gl.LINEAR)
-    gpu.upload(bwdTex, flow?.bwd ?? new Uint8Array(128 * gw * gh), gw, gh, gl.LINEAR)
+    gpu.upload(fwdTex, flow?.fwd ?? zeroFlow(gw, gh), gw, gh, gl.LINEAR)
+    gpu.upload(bwdTex, flow?.bwd ?? zeroFlow(gw, gh), gw, gh, gl.LINEAR)
     this.flowTexCache.set(i, { fwd: fwdTex, bwd: bwdTex })
     this.flowTexOrder.push(i)
     return { fwdTex, bwdTex }
@@ -997,7 +1010,7 @@ class SessionImpl implements InterpSession {
       }
       const s = this.scratch
       if (s) {
-        for (const t of [s.texA0, s.texB0, s.flow0, s.flow1, s.storeF, s.storeB, ...s.texA, ...s.texB]) gl.deleteTexture(t)
+        for (const t of [s.texA0, s.texB0, ...s.flowL.flat(), s.storeF, s.storeB, ...s.texA, ...s.texB]) gl.deleteTexture(t)
       }
       this.scratch = null
       for (const e of this.flowTexCache.values()) {

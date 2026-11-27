@@ -2122,7 +2122,8 @@ export class Compositor {
           let matte: WebGLTexture | null = null
           if (clip.effects.some(e => e.type === 'sx_cutout' && e.enabled)) {
             const st = clip.kind === 'video' ? clipSourceTime(clip as VideoClip, localTime) : 0
-            const m = matteAt(clip.id, st)
+            const cut = clip.effects.find(e => e.type === 'sx_cutout' && e.enabled)
+            const m = matteAt(clip.id, st, cut ? (evalEffectParam(cut, 'temporal', localTime) ?? 0.35) : 0)
             if (m) matte = this.uploadMatte(clip.id, m)
           }
           fxTex = this.fx.apply(t0.tex, t0.w || srcW, t0.h || srcH, Math.max(rw, rh) * 1.25, clip.effects, localTime, time, { matte })

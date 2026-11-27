@@ -1,5 +1,24 @@
 # ANIME STUDIO — Código fuente completo
 
+## v23 — Flow arreglado de verdad, AI Cut-out tipo chroma, máscaras como en After
+
+- **Flow (Video Lab y cámara lenta)**: los cuadros intermedios salían boca abajo, con
+  "fantasmas" y rayas. Causas: lectura de píxeles invertida (cuadros y campo de flujo), flujo
+  inicial de −64 px en vez de 0, gradientes escalados por la resolución, precisión de 8 bits
+  (el solver se trababa), texturas de flujo compartidas entre niveles de la pirámide, flujo
+  dividido por el tamaño de la grilla y síntesis que muestreaba en la dirección contraria.
+  Ahora: flujo 16 bits por nivel, Horn–Schunck con warping correcto, síntesis bidireccional con
+  punto fijo y oclusión. Verificado con prueba sintética (error de fondo 9 → 0.06).
+- **Modelos tipo Topaz**: Sharpen ahora realmente enfoca (componente unsharp); pipeline
+  verificado (PSNR 40.9 dB en pasada neutra).
+- **AI Cut-out como un chroma**: Threshold, Softness, Grow/Shrink, Fill holes, Smooth edges,
+  Temporal smoothing, Screen key (Auto/Green/Blue) + Key strength, Spill suppression, Edge color
+  fix, vistas Final/Matte/Status, presets, calidad 512/768/1024 y "Add part" (sumar pelo/objetos).
+- **Máscaras**: el cuadradito (marcador del ancla dibujado en la esquina) arreglado; Rectángulo /
+  Elipse con una capa seleccionada crean MÁSCARA (como After); la pluma y los puntos funcionan en
+  la zona oscura alrededor del cuadro (pasteboard); la máscara se dibuja con curvas bezier.
+- **Fuentes personalizadas / autoguardado**: compartían base de datos y una rompía a la otra.
+
 ## v22 — Pantalla de inicio con proyectos, proyectos de After Effects, presets .ffx, arreglos
 
 - **Home (como After Effects)**: al iniciar muestra *Recent projects*; cada proyecto se guarda

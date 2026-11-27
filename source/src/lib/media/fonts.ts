@@ -49,10 +49,11 @@ const listeners = new Set<() => void>()
 function openDB(): Promise<IDBDatabase | null> {
   return new Promise(resolve => {
     if (typeof indexedDB === 'undefined') { resolve(null); return }
-    const req = indexedDB.open(DB_NAME, 1)
+    const req = indexedDB.open(DB_NAME, 2) // v2: fonts + autosave share this DB — create both stores
     req.onupgradeneeded = () => {
       const db = req.result
-      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' })
+      if (!db.objectStoreNames.contains('fonts')) db.createObjectStore('fonts', { keyPath: 'id' })
+      if (!db.objectStoreNames.contains('autosave')) db.createObjectStore('autosave', { keyPath: 'key' })
     }
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => resolve(null)

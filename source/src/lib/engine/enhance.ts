@@ -170,6 +170,10 @@ void main() {
     // flat-region deblock tail
     vec3 blurAvg = (sampleTex(v_uv + vec2(-px.x, 0.0)).rgb + sampleTex(v_uv + vec2(px.x, 0.0)).rgb +
                     sampleTex(v_uv + vec2(0.0, -px.y)).rgb + sampleTex(v_uv + vec2(0.0, px.y)).rgb) / 4.0;
+    // classic unsharp component so soft (blurry) footage visibly sharpens too — the
+    // across-edge term alone only touched already-hard lines. Weaker in flat areas (noise).
+    float texMask = 0.3 + 0.7 * clamp(gmag * 4.0, 0.0, 1.0);
+    outc += (center - blurAvg) * u_sharpen * 1.6 * texMask;
     outc = mix(outc, blurAvg, u_deblock * (1.0 - edge) * 0.3);
     gl_FragColor = vec4(clamp(outc, 0.0, 1.0), 1.0);
   } else {

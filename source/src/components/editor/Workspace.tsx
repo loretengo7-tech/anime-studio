@@ -12,6 +12,7 @@
  * M adds a marker.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useUIStore } from '@/lib/store/uiStore'
 import { useEditorStore } from '@/lib/store/editorStore'
 import { playbackEngine } from '@/lib/engine/playback'
 import { mediaManager } from '@/lib/media/mediaManager'
@@ -132,6 +133,10 @@ export function Workspace() {
       playbackEngine,
       compositor: playbackEngine.compositor,
       store: useEditorStore,
+      ui: useUIStore,
+      lab: () => import('@/lib/engine/videolab'),
+      enhance: () => import('@/lib/engine/enhance'),
+      interp: () => import('@/lib/engine/interpolation'),
       mediaManager,
     }
     setReady(true)

@@ -72,7 +72,9 @@ export async function deleteMatte(id: string) {
 }
 
 /** Matte frame for a clip at a SOURCE time (null while not baked / loading). */
-export function matteAt(clipId: string, sourceTime: number): { data: Uint8Array; w: number; h: number; key: string } | null {
+const blended = new Map<string, { key: string; data: Uint8Array }>()
+let bakeGen = 0 // part of the texture key so a re-bake re-uploads
+export function matteAt(clipId: string, sourceTime: number, temporal = 0): { data: Uint8Array; w: number; h: number; key: string } | null {
   const m = mattes.get(clipId)
   if (!m) {
     if (!loading.has(clipId)) {
@@ -82,7 +84,20 @@ export function matteAt(clipId: string, sourceTime: number): { data: Uint8Array;
     return null
   }
   const i = Math.max(0, Math.min(m.frames.length - 1, Math.round((sourceTime - m.srcStart) * m.fps)))
-  return { data: m.frames[i], w: m.w, h: m.h, key: `${clipId}:${i}` }
+  const tq = Math.round(Math.max(0, Math.min(1, temporal)) * 20) / 20
+  if (tq <= 0 || m.frames.length < 3) return { data: m.frames[i], w: m.w, h: m.h, key: `${clipId}:${bakeGen}:${i}` }
+  // temporal smoothing: weighted average with the neighbour frames (removes AI matte jitter / flicker)
+  const key = `${clipId}:${bakeGen}:${i}:t${tq}`
+  const hit = blended.get(clipId)
+  if (hit?.key === key) return { data: hit.data, w: m.w, h: m.h, key }
+  const a = m.frames[Math.max(0, i - 1)], b = m.frames[i], c = m.frames[Math.min(m.frames.length - 1, i + 1)]
+  const a2 = m.frames[Math.max(0, i - 2)], c2 = m.frames[Math.min(m.frames.length - 1, i + 2)]
+  const w1 = 0.5 * tq, w2 = 0.25 * tq, w0 = 1, ws = w0 + 2 * w1 + 2 * w2
+  const out = hit?.data.length === b.length ? hit.data : new Uint8Array(b.length)
+  if (!a || !c || !a2 || !c2) return { data: b, w: m.w, h: m.h, key: `${clipId}:${bakeGen}:${i}` }
+  for (let k = 0; k < b.length; k++) out[k] = (b[k] * w0 + (a[k] + c[k]) * w1 + (a2[k] + c2[k]) * w2) / ws
+  blended.set(clipId, { key, data: out })
+  return { data: out, w: m.w, h: m.h, key }
 }
 export function hasMatte(clipId: string) { return mattes.has(clipId) }
 /** Reuse a baked matte on a copy of the layer (duplicate / text-behind sandwich). */
@@ -97,16 +112,24 @@ export function shareMatte(fromId: string, toId: string) {
  * Bake the cut-out for `clip`. `point` is normalised (0..1, y down) inside the
  * source frame at `atSourceTime`. The bake walks forward and backward from there.
  */
-export async function bakeCutout(doc: ProjectDoc, clip: Clip, point: { x: number; y: number }, atSourceTime: number, onProgress: (p: number) => void, isCancelled: () => boolean): Promise<number> {
+export async function bakeCutout(doc: ProjectDoc, clip: Clip, point: { x: number; y: number }, atSourceTime: number, onProgress: (p: number) => void, isCancelled: () => boolean, opts: { maxD?: number; merge?: boolean } = {}): Promise<number> {
   const seg = await getSegmenter()
-  const MAXD = 512
+  const MAXD = opts.maxD ?? 512
+  const prev = opts.merge ? mattes.get(clip.id) : undefined
+  const mergeInto = (m: Matte): Matte => {
+    // "Add to cut-out": union with the existing matte (e.g. a second pick on hair or a prop)
+    if (!prev || prev.w !== m.w || prev.h !== m.h || prev.frames.length !== m.frames.length) return m
+    m.frames = m.frames.map((f, i) => { const o = prev.frames[i]; if (!o || !f) return f ?? o; const r = new Uint8Array(f.length); for (let k = 0; k < f.length; k++) r[k] = f[k] > o[k] ? f[k] : o[k]; return r })
+    return m
+  }
   if (clip.kind === 'image') {
     const src = mediaManager.get(clip as ImageClip, 0) as HTMLCanvasElement | null
     if (!src) throw new Error('Image not loaded yet')
     const { w, h, cv, ctx } = frameCanvas(src.width, src.height, MAXD)
     ctx.drawImage(src, 0, 0, w, h)
     const m = runOnce(seg, cv, point, w, h)
-    const matte: Matte = { w, h, fps: 1, srcStart: 0, frames: [m.mask] }
+    const matte: Matte = mergeInto({ w, h, fps: 1, srcStart: 0, frames: [m.mask] })
+    blended.delete(clip.id); bakeGen++
     mattes.set(clip.id, matte); void persist(clip.id, matte)
     onProgress(1)
     return 1
@@ -144,7 +167,9 @@ export async function bakeCutout(doc: ProjectDoc, clip: Clip, point: { x: number
   await walk(startIdx, n, 1)
   await walk(startIdx - 1, -1, -1)
   el.removeAttribute('src'); el.load()
-  const matte: Matte = { w, h, fps, srcStart, frames }
+  const matte: Matte = mergeInto({ w, h, fps, srcStart, frames })
+  blended.delete(clip.id)
+  bakeGen++
   mattes.set(clip.id, matte)
   void persist(clip.id, matte)
   return n
