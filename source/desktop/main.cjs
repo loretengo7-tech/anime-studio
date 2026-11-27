@@ -148,12 +148,78 @@ ipcMain.handle('as:transcode', async (_e, { name, data, preset }) => {
 })
 
 // ---------- Video Lab (Topaz-style enhance + Flowframes-style interpolation) ----------
+// ---------- neural tools (bundled by CI): Real-ESRGAN + RIFE, ncnn-vulkan builds ----------
+function aiDir() { return app.isPackaged ? path.join(process.resourcesPath, 'ai') : path.join(__dirname, 'ai') }
+function aiTools() {
+  const d = aiDir(), ext = process.platform === 'win32' ? '.exe' : ''
+  const esrgan = path.join(d, 'realesrgan', 'realesrgan-ncnn-vulkan' + ext)
+  const rife = path.join(d, 'rife', 'rife-ncnn-vulkan' + ext)
+  return {
+    esrgan: fs.existsSync(esrgan) ? esrgan : null,
+    esrganModels: path.join(d, 'realesrgan', 'models'),
+    rife: fs.existsSync(rife) ? rife : null,
+    rifeModel: path.join(d, 'rife', 'rife-v4.6'),
+  }
+}
+ipcMain.handle('as:ai-tools', async () => { const t = aiTools(); return { esrgan: !!t.esrgan, rife: !!t.rife } })
+
+const labProcs = new Set()
+let labCancelled = false
+ipcMain.handle('as:videolab-cancel', async () => { labCancelled = true; for (const p of labProcs) { try { p.kill() } catch { } } return true })
+
+/** Run a tool; resolves on exit 0. onLine gets stdout lines (ffmpeg -progress). */
+function runTool(exe, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    if (labCancelled) return reject(new Error('Cancelled'))
+    const p = spawn(exe, args, { windowsHide: true, cwd: opts.cwd })
+    labProcs.add(p)
+    let err = '', buf = ''
+    p.stdout.on('data', d => {
+      if (!opts.onLine) return
+      buf += d.toString()
+      let i
+      while ((i = buf.indexOf('\n')) >= 0) { opts.onLine(buf.slice(0, i).trim()); buf = buf.slice(i + 1) }
+    })
+    p.stderr.on('data', d => { err = (err + d.toString()).slice(-4000) })
+    p.on('error', e => { labProcs.delete(p); reject(e) })
+    p.on('close', code => {
+      labProcs.delete(p)
+      if (labCancelled) return reject(new Error('Cancelled'))
+      code === 0 ? resolve() : reject(new Error(`${path.basename(exe)} failed (${code}): ${err.split('\n').filter(Boolean).slice(-3).join(' ')}`))
+    })
+  })
+}
+const countFiles = d => { try { return fs.readdirSync(d).length } catch { return 0 } }
+
+ipcMain.handle('as:videolab-preview', async (_e, { name, data, time, model, scale }) => {
+  const t = aiTools()
+  if (!t.esrgan) throw new Error('Real-ESRGAN is not bundled in this build')
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'animestudio-pv-'))
+  try {
+    const input = path.join(dir, String(name || 'media').replace(/[^\w.-]+/g, '_'))
+    fs.writeFileSync(input, Buffer.from(data))
+    const f = path.join(dir, 'f'), u = path.join(dir, 'u')
+    fs.mkdirSync(f); fs.mkdirSync(u)
+    labCancelled = false
+    await runTool(ffmpegPath(), ['-y', '-hide_banner', '-loglevel', 'error', '-ss', String(Math.max(0, Number(time) || 0)), '-i', input, '-frames:v', '1', path.join(f, '00000001.png')])
+    const m = /x4plus/.test(model) ? 'realesrgan-x4plus-anime' : 'realesr-animevideov3'
+    const sc = m === 'realesrgan-x4plus-anime' ? 4 : Math.max(2, Math.min(4, Math.round(Number(scale) || 2)))
+    try {
+      await runTool(t.esrgan, ['-i', f, '-o', u, '-n', m, '-s', String(sc), '-m', t.esrganModels, '-f', 'png'], { cwd: path.dirname(t.esrgan) })
+    } catch (err) { throw new Error(`${err.message} — Real-ESRGAN needs a GPU with Vulkan (update your graphics driver).`) }
+    const read = p => { const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) }
+    return { before: read(path.join(f, '00000001.png')), after: read(path.join(u, '00000001.png')) }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }) }
+})
+
 ipcMain.handle('as:videolab', async (e, { name, data, opts }) => {
+  labCancelled = false
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'animestudio-lab-'))
   const safe = String(name || 'media').replace(/[^\w.-]+/g, '_')
   const input = path.join(dir, safe)
   const out = path.join(dir, 'lab-out.mp4')
   fs.writeFileSync(input, Buffer.from(data))
+  const send = (progress, speed, fps) => { try { e.sender.send('as:videolab-progress', { progress: Math.max(0, Math.min(1, progress)), speed, fps }) } catch { } }
   const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d)
   const start = Math.max(0, num(opts.start, 0))
   const dur = Math.max(0.05, num(opts.end, start + 1) - start)
@@ -162,57 +228,115 @@ ipcMain.handle('as:videolab', async (e, { name, data, opts }) => {
   const factor = target ? target / srcFps : 1
   const w = Math.max(16, Math.round(num(opts.width, 1920) / 2) * 2), h = Math.max(16, Math.round(num(opts.height, 1080) / 2) * 2)
   const en = opts.enhance || null
-  const vf = []
+  const slow = !!(opts.slowmo && target)
+  const crf = String(Math.min(30, Math.max(10, Math.round(num(opts.crf, 16)))))
+  const neuralUp = opts.neuralUpscale || null // { model, scale }
+  const useRife = opts.method === 'rife' && !!target
+  const pre = [], post = []
   if (en) {
     const d = num(en.denoise, 0), db = num(en.deblock, 0)
-    if (d + db > 0.02) vf.push(`hqdn3d=${(1 + 6 * d + 3 * db).toFixed(2)}:${(1 + 4 * d).toFixed(2)}:${(2 + 6 * d).toFixed(2)}:${(2 + 4 * d).toFixed(2)}`)
-  }
-  if (target) {
-    if (opts.method === 'dup') vf.push(`fps=${target}`)
-    else if (opts.method === 'blend') vf.push(`minterpolate=fps=${target}:mi_mode=blend`)
-    else vf.push(`minterpolate=fps=${target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:${opts.sceneDetect === false ? 'scd=none' : 'scd=fdiff:scd_threshold=10'}`)
-  }
-  vf.push(`scale=${w}:${h}:flags=lanczos`)
-  if (en) {
+    if (d + db > 0.02) pre.push(`hqdn3d=${(1 + 6 * d + 3 * db).toFixed(2)}:${(1 + 4 * d).toFixed(2)}:${(2 + 6 * d).toFixed(2)}:${(2 + 4 * d).toFixed(2)}`)
     const sh = Math.min(2, num(en.sharpen, 0) * 1.4 + num(en.detail, 0) * 0.6)
-    if (sh > 0.02) vf.push(`unsharp=5:5:${sh.toFixed(2)}:5:5:0`)
+    if (sh > 0.02) post.push(`unsharp=5:5:${sh.toFixed(2)}:5:5:0`)
   }
-  const slow = !!(opts.slowmo && target)
-  if (slow) vf.push(`setpts=${factor.toFixed(6)}*PTS`)
-  const outDur = dur * (slow ? factor : 1)
-  const crf = String(Math.min(30, Math.max(10, Math.round(num(opts.crf, 16)))))
-  const args = ['-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1',
-    '-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', input,
-    '-map', '0:v:0', ...(slow ? ['-an'] : ['-map', '0:a:0?', '-c:a', 'aac', '-b:a', '192k']),
-    '-vf', vf.join(','), ...(slow ? ['-r', String(srcFps)] : []),
-    '-c:v', 'libx264', '-preset', 'medium', '-crf', crf, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out]
-  log('videolab', JSON.stringify(args.slice(4)))
+  const tag = [en || neuralUp ? `${h}p` : '', target ? (slow ? `${Math.round(factor)}x-slowmo` : `${target}fps`) : '', useRife ? 'RIFE' : '', neuralUp ? 'ESRGAN' : ''].filter(Boolean).join('-') || 'lab'
+  const base = safe.replace(/\.[^.]+$/, '')
+  const finish = () => { const buf = fs.readFileSync(out); return { name: `${base} [${tag}].mp4`, data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) } }
+  const ffProgress = (outDur, from, span, label) => {
+    const last = {}
+    return line => {
+      const [k, v] = line.split('=')
+      if (k === 'out_time_us' || k === 'out_time_ms') last.t = Number(v) / 1e6
+      else if (k === 'fps') last.fps = Number(v)
+      else if (k === 'speed') last.speed = v
+      else if (k === 'progress') send(from + span * Math.min(1, (last.t || 0) / outDur), `${label} ${last.speed || ''}`, last.fps)
+    }
+  }
   try {
-    await new Promise((resolve, reject) => {
-      const p = spawn(ffmpegPath(), args, { windowsHide: true })
-      let err = '', buf = '', last = {}
-      p.stdout.on('data', d => {
-        buf += d.toString()
-        let i
-        while ((i = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1)
-          const [k, v] = line.split('=')
-          if (k === 'out_time_us' || k === 'out_time_ms') last.t = Number(v) / 1e6
-          else if (k === 'fps') last.fps = Number(v)
-          else if (k === 'speed') last.speed = v
-          else if (k === 'progress') {
-            try { e.sender.send('as:videolab-progress', { progress: Math.min(1, (last.t || 0) / outDur), fps: last.fps, speed: last.speed }) } catch { }
-          }
-        }
-      })
-      p.stderr.on('data', d => { err = (err + d.toString()).slice(-4000) })
-      p.on('error', reject)
-      p.on('close', code => (code === 0 ? resolve() : reject(new Error(`ffmpeg failed (${code}): ${err.split('\n').slice(-4).join(' ')}`))))
-    })
-    const buf = fs.readFileSync(out)
-    const base = safe.replace(/\.[^.]+$/, '')
-    const tag = [en ? `${h}p` : '', target ? (slow ? `${Math.round(factor)}x-slowmo` : `${target}fps`) : ''].filter(Boolean).join('-') || 'lab'
-    return { name: `${base} [${tag}].mp4`, data: buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) }
+    // ---------------- neural path (Real-ESRGAN and/or RIFE on extracted frames) ----------------
+    if (neuralUp || useRife) {
+      const t = aiTools()
+      if (neuralUp && !t.esrgan) throw new Error('Real-ESRGAN is not bundled in this build')
+      if (useRife && !t.rife) throw new Error('RIFE is not bundled in this build')
+      const fDir = path.join(dir, 'f'), uDir = path.join(dir, 'u'), rDir = path.join(dir, 'r')
+      for (const d of [fDir, uDir, rDir]) fs.mkdirSync(d)
+      const nEst = Math.max(1, Math.round(dur * srcFps))
+      const W = { ex: 0.08, up: neuralUp ? 0.5 : 0, ri: useRife ? 0.3 : 0, enc: 0.12 }
+      const tot = W.ex + W.up + W.ri + W.enc
+      let at = 0
+      // 1) extract source frames (with the pre-clean filters)
+      await runTool(ffmpegPath(), ['-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1', '-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', input,
+        '-map', '0:v:0', '-fps_mode', 'passthrough', ...(pre.length ? ['-vf', pre.join(',')] : []), path.join(fDir, '%08d.png')],
+        { onLine: ffProgress(dur, 0, W.ex / tot, 'extracting frames') })
+      at += W.ex / tot
+      const n = countFiles(fDir)
+      if (!n) throw new Error('No frames could be extracted from this clip')
+      let cur = fDir
+      const watch = (d, expect, from, span, label) => setInterval(() => send(from + span * Math.min(1, countFiles(d) / expect), label), 700)
+      // 2) Real-ESRGAN upscale
+      if (neuralUp) {
+        const model = /x4plus/.test(neuralUp.model) ? 'realesrgan-x4plus-anime' : 'realesr-animevideov3'
+        const sc = model === 'realesrgan-x4plus-anime' ? 4 : Math.max(2, Math.min(4, Math.round(num(neuralUp.scale, 2))))
+        const iv = watch(uDir, n, at, W.up / tot, `Real-ESRGAN ${model} ${sc}×`)
+        try {
+          await runTool(t.esrgan, ['-i', fDir, '-o', uDir, '-n', model, '-s', String(sc), '-m', t.esrganModels, '-f', 'png'], { cwd: path.dirname(t.esrgan) })
+        } catch (err) { throw new Error(`${err.message} — Real-ESRGAN needs a GPU with Vulkan (update your graphics driver), or use the classic GPU enhance.`) }
+        finally { clearInterval(iv) }
+        at += W.up / tot
+        cur = uDir
+      }
+      // 3) RIFE interpolation to the exact target frame count
+      let outFrames = n
+      if (useRife) {
+        outFrames = Math.max(n, Math.round(n * factor))
+        const iv = watch(rDir, outFrames, at, W.ri / tot, `RIFE 4.6 → ${outFrames} frames`)
+        try {
+          const uhd = Math.max(w, h) > 2600 ? ['-u'] : []
+          await runTool(t.rife, ['-i', cur, '-o', rDir, '-m', t.rifeModel, '-n', String(outFrames), '-f', '%08d.png', ...uhd], { cwd: path.dirname(t.rife) })
+        } catch (err) { throw new Error(`${err.message} — RIFE needs a GPU with Vulkan (update your graphics driver), or use Flow / MCI.`) }
+        finally { clearInterval(iv) }
+        at += W.ri / tot
+        cur = rDir
+      }
+      // 4) encode (other interpolation methods + final scale/sharpen happen here)
+      const outFps = useRife ? (slow ? srcFps : srcFps * (countFiles(rDir) / n)) : srcFps
+      const vf = []
+      if (target && !useRife) {
+        if (opts.method === 'dup') vf.push(`fps=${target}`)
+        else if (opts.method === 'blend') vf.push(`minterpolate=fps=${target}:mi_mode=blend`)
+        else vf.push(`minterpolate=fps=${target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:${opts.sceneDetect === false ? 'scd=none' : 'scd=fdiff:scd_threshold=10'}`)
+        if (slow) vf.push(`setpts=${factor.toFixed(6)}*PTS`)
+      }
+      vf.push(`scale=${w}:${h}:flags=lanczos`, ...post)
+      const outDur = outFrames / outFps * (slow && !useRife ? factor : 1)
+      await runTool(ffmpegPath(), ['-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1',
+        '-framerate', outFps.toFixed(6), '-i', path.join(cur, '%08d.png'),
+        ...(slow ? [] : ['-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', input]),
+        '-map', '0:v:0', ...(slow ? ['-an'] : ['-map', '1:a:0?', '-c:a', 'aac', '-b:a', '192k', '-shortest']),
+        '-vf', vf.join(','), ...(slow ? ['-r', String(srcFps)] : []),
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', crf, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out],
+        { onLine: ffProgress(outDur, at, W.enc / tot, 'encoding') })
+      send(1, 'done')
+      return finish()
+    }
+    // ---------------- ffmpeg-only path (MCI / blend / dup + classic filters) ----------------
+    const vf = [...pre]
+    if (target) {
+      if (opts.method === 'dup') vf.push(`fps=${target}`)
+      else if (opts.method === 'blend') vf.push(`minterpolate=fps=${target}:mi_mode=blend`)
+      else vf.push(`minterpolate=fps=${target}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1:${opts.sceneDetect === false ? 'scd=none' : 'scd=fdiff:scd_threshold=10'}`)
+    }
+    vf.push(`scale=${w}:${h}:flags=lanczos`, ...post)
+    if (slow) vf.push(`setpts=${factor.toFixed(6)}*PTS`)
+    const outDur = dur * (slow ? factor : 1)
+    const args = ['-y', '-hide_banner', '-loglevel', 'error', '-nostats', '-progress', 'pipe:1',
+      '-ss', start.toFixed(3), '-t', dur.toFixed(3), '-i', input,
+      '-map', '0:v:0', ...(slow ? ['-an'] : ['-map', '0:a:0?', '-c:a', 'aac', '-b:a', '192k']),
+      '-vf', vf.join(','), ...(slow ? ['-r', String(srcFps)] : []),
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', crf, '-pix_fmt', 'yuv420p', '-movflags', '+faststart', out]
+    log('videolab', JSON.stringify(args.slice(4)))
+    await runTool(ffmpegPath(), args, { onLine: ffProgress(outDur, 0, 1, opts.method === 'mci' ? 'motion-compensated' : 'ffmpeg') })
+    return finish()
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -278,7 +402,8 @@ function createWindow() {
           const lab = await window.animeStudioDesktop.videolab('smoke.mkv', buf, { start: 0, end: 0.5, srcFps: 30, targetFps: 60, method: 'mci', sceneDetect: true, width: 640, height: 360, enhance: { denoise: 0.3, deblock: 0.2, sharpen: 0.4, detail: 0.2 }, crf: 22 })
           conv += ' | videolab ' + lab.name + ' ' + lab.data.byteLength
         }
-        return JSON.stringify({ has, conv, title: document.title, gl: !!document.createElement('canvas').getContext('webgl2') })
+        const ai = has && window.animeStudioDesktop.aiTools ? await window.animeStudioDesktop.aiTools() : null
+        return JSON.stringify({ has, conv, ai, title: document.title, gl: !!document.createElement('canvas').getContext('webgl2') })
       })()`)
       console.log('[smoke]', info)
       const img = await win.webContents.capturePage()

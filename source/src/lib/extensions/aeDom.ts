@@ -63,15 +63,106 @@ class HostSession {
       for (const k of Object.keys(work)) dd[k] = (work as unknown as Record<string, unknown>)[k]
     }, 'Script')
   }
+  discard() { this.work = null }
   run<T>(fn: () => T): T {
     this.depth++
-    try { return fn() } finally {
+    let failed: unknown = null
+    try { return fn() } catch (e) { failed = e; throw e } finally {
       this.depth--
-      if (this.depth === 0) this.flush()
+      if (this.depth === 0) {
+        // a script waiting for a file dialog is replayed with the answer: drop its partial edits
+        if (failed instanceof NeedDialog || dialogState.pending) { this.discard(); pendingImports.length = 0 }
+        else { this.flush(); void drainPendingImports() }
+      }
     }
   }
 }
 export const hostSession = new HostSession()
+
+// ------------------------------------------------------------------ file dialogs (replay model)
+// ExtendScript dialogs block; the browser's don't. A script that asks for a file
+// throws NeedDialog, we show the real picker, then REPLAY the call with the
+// answer queued, so File.openDialog()/Folder.selectDialog() "return" it.
+export interface PickedFile { name: string; path: string; file: File | null; text: string | null; isFolder?: boolean; children?: PickedFile[] }
+export class NeedDialog extends Error {
+  constructor(public kind: 'open' | 'folder' | 'save', public multi: boolean, public filter: string, public defaultName = '') { super('__AS_NEEDS_DIALOG__') }
+}
+const dialogState = { answers: [] as (PickedFile[] | null)[], cursor: 0, pending: null as NeedDialog | null }
+function takeDialog(d: NeedDialog): PickedFile[] | null {
+  if (dialogState.cursor < dialogState.answers.length) return dialogState.answers[dialogState.cursor++]
+  dialogState.pending = d
+  throw d
+}
+function pickFiles(d: NeedDialog): Promise<PickedFile[] | null> {
+  if (d.kind === 'save') return Promise.resolve([{ name: d.defaultName || 'output.txt', path: d.defaultName || 'output.txt', file: null, text: null }])
+  return new Promise(res => {
+    const i = document.createElement('input')
+    i.type = 'file'
+    if (d.multi) i.multiple = true
+    if (d.kind === 'folder') (i as HTMLInputElement & { webkitdirectory: boolean }).webkitdirectory = true
+    let done = false
+    i.addEventListener('cancel', () => { if (!done) { done = true; res(null) } })
+    i.onchange = async () => {
+      done = true
+      const files = [...(i.files ?? [])]
+      const read = async (f: File): Promise<PickedFile> => ({
+        name: f.name, path: (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name, file: f,
+        text: f.size < 4 * 1024 * 1024 && !/^(video|audio|image)\//.test(f.type) ? await f.text().catch(() => null) : null,
+      })
+      const picked = await Promise.all(files.map(read))
+      if (d.kind === 'folder') {
+        const root = picked[0]?.path.split('/')[0] ?? 'Folder'
+        res([{ name: root, path: root, file: null, text: null, isFolder: true, children: picked }])
+      } else res(picked.length ? picked : null)
+    }
+    const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation
+    if (!ua || ua.isActive) { i.click(); return }
+    // no user gesture (e.g. the script ran when its panel opened): ask with a button
+    const box = document.createElement('div')
+    box.style.cssText = 'position:fixed;left:50%;top:18%;transform:translateX(-50%);z-index:9999;background:#262626;border:1px solid #000;border-radius:6px;box-shadow:0 18px 60px rgba(0,0,0,.7);padding:16px 18px;color:#ddd;font:12px Inter,system-ui,sans-serif;min-width:300px'
+    box.innerHTML = `<div style="font-weight:600;color:#fff;margin-bottom:6px">The script needs ${d.kind === 'folder' ? 'a folder' : d.multi ? 'files' : 'a file'}</div><div style="color:#999;margin-bottom:12px">${d.filter ? String(d.filter).replace(/[<>&]/g, '') : 'Choose what to use, like After Effects\' dialog.'}</div>`
+    const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end'
+    const ok = document.createElement('button'); ok.textContent = 'Choose…'; ok.style.cssText = 'background:#2d8ceb;color:#fff;border:0;border-radius:3px;padding:5px 14px'
+    const no = document.createElement('button'); no.textContent = 'Cancel'; no.style.cssText = 'background:#3a3a3a;color:#eee;border:0;border-radius:3px;padding:5px 14px'
+    ok.onclick = () => { box.remove(); i.click() }
+    no.onclick = () => { box.remove(); done = true; res(null) }
+    row.append(no, ok); box.append(row); document.body.append(box)
+  })
+}
+/** Run a script call; if it asked for a dialog, show it and replay (up to 8 dialogs). */
+export async function runWithDialogs<T>(fn: () => T): Promise<T> {
+  dialogState.answers = []
+  for (let n = 0; n < 9; n++) {
+    dialogState.cursor = 0
+    dialogState.pending = null
+    let out: T | undefined
+    let err: unknown = null
+    try { out = fn() } catch (e) { err = e }
+    const need = err instanceof NeedDialog ? err : dialogState.pending
+    if (need) {
+      dialogState.pending = null
+      dialogState.answers.push(await pickFiles(need))
+      continue
+    }
+    if (err) throw err
+    return out as T
+  }
+  throw new Error('Too many dialogs in one script call')
+}
+export function dialogPending() { return !!dialogState.pending }
+
+// ------------------------------------------------------------------ imports requested by scripts
+const pendingImports: { file: File; addToComp: boolean; ref: { meta?: unknown } }[] = []
+async function drainPendingImports() {
+  if (!pendingImports.length) return
+  const list = pendingImports.splice(0)
+  const { importFiles, addAssetLayer } = await import('@/components/editor/ae/aeActions')
+  for (const it of list) {
+    const [meta] = await importFiles([it.file])
+    it.ref.meta = meta
+    if (meta && it.addToComp) addAssetLayer(meta)
+  }
+}
 
 const S = () => useEditorStore.getState()
 const comp = () => hostSession.doc().composition
@@ -574,6 +665,20 @@ class LayerCollection {
   [i: number]: AELayer
   get length() { return layerOrder(hostSession.doc()).length }
   addNull(_dur?: number) { return this.addKind('null') }
+  /** comp.layers.add(footageItem): pending imports land on the timeline when imported */
+  add(item: unknown) {
+    if (item instanceof PendingFootage) {
+      const p = pendingImports.find(x => x.ref === item.ref)
+      if (p) p.addToComp = true
+      return null
+    }
+    if (item instanceof FootageItem) {
+      hostSession.flush()
+      const a = hostSession.doc().assets.find(x => x.id === item.id)
+      if (a) void import('@/components/editor/ae/aeActions').then(m => m.addAssetLayer(a))
+    }
+    return null
+  }
   addSolid(_color?: number[], name?: string) { const l = this.addKind('solid'); if (name) l.name = name; return l }
   addText(text?: string) { const l = this.addKind('text'); if (text !== undefined) { const c = wClip(l.clipId) as Clip & { text?: { content: string } }; if (c.text) c.text.content = String(text) } return l }
   addShape() { return this.addKind('shape') }
@@ -639,6 +744,13 @@ export class CompItem {
   openInViewer() { return null }
   duplicate() { return this }
 }
+/** Footage a script just imported (real asset arrives when the call returns). */
+export class PendingFootage {
+  name: string; ref: { meta?: unknown }; parentFolder: unknown = null; label = 0; comment = ''
+  constructor(name: string, ref: { meta?: unknown }) { this.name = name; this.ref = ref }
+  get typeName() { return 'Footage' }
+  get mainSource() { return { file: null, isStill: false } }
+}
 export class FootageItem {
   constructor(public name: string, public width: number, public height: number, public duration: number, public frameRate: number, public id: string) { }
   get typeName() { return 'Footage' }
@@ -653,10 +765,33 @@ function projectApi() {
       const a = hostSession.doc().assets[i - 2]
       return a ? new FootageItem(a.name, a.width, a.height, a.duration, a.fps, a.id) : null
     },
-    get items() { const self = this; return new Proxy({ get length() { return self.numItems } } as Record<string, unknown>, { get(t, p) { return typeof p === 'string' && /^\d+$/.test(p) ? self.item(Number(p)) : t[p as string] } }) },
+    get items() {
+      const self = this
+      const base = {
+        get length() { return self.numItems },
+        addFolder: (name: string) => ({ name, typeName: 'Folder', items: [], numItems: 0, parentFolder: null }),
+        addComp: (name: string) => { const c = new CompItem(); try { c.name = name } catch { } return c },
+      } as Record<string, unknown>
+      return new Proxy(base, { get(t, p) { return typeof p === 'string' && /^\d+$/.test(p) ? self.item(Number(p)) : t[p as string] } })
+    },
     get file() { return null },
     get selection() { return [] },
     save() { return true },
+    /** app.project.importFile(new ImportOptions(file)) — the media is imported after the call */
+    importFile(io: { file?: { __file?: File | null; name?: string } } | null) {
+      const f = io?.file?.__file
+      if (!f) throw new Error('File not found: ' + (io?.file?.name ?? ''))
+      const ref: { meta?: unknown } = {}
+      pendingImports.push({ file: f, addToComp: false, ref })
+      return new PendingFootage(f.name, ref)
+    },
+    importFileWithDialog() {
+      const r = takeDialog(new NeedDialog('open', true, ''))
+      if (!r) return null
+      return r.filter(x => x.file).map(x => { const ref = {}; pendingImports.push({ file: x.file!, addToComp: false, ref }); return new PendingFootage(x.name, ref) })
+    },
+    importPlaceholder(name: string) { return new PendingFootage(name, {}) },
+    get rootFolder() { return { name: 'Root', numItems: 0, items: [] } },
     activeComp: undefined,
     get bitsPerChannel() { return 8 },
   }
@@ -723,25 +858,103 @@ export function makeScope(cb: HostCallbacks): Record<string, unknown> {
     screens: [{ left: 0, top: 0, right: typeof window !== 'undefined' ? window.innerWidth : 1920, bottom: typeof window !== 'undefined' ? window.innerHeight : 1080 }],
   }
   class FileStub {
-    name: string; fsName: string; exists = false; encoding = 'UTF-8'
-    constructor(p?: string) { this.fsName = String(p ?? ''); this.name = this.fsName.split(/[\\/]/).pop() ?? '' }
-    open() { return false } read() { return '' } write() { return false } writeln() { return false } close() { return true } remove() { return false }
-    openDlg() { return null } saveDlg() { return null } execute() { return false }
-    get parent() { return new FolderStub('') }
-    static openDialog() { return null }
-    static saveDialog() { return null }
+    name: string; fsName: string; exists = false; encoding = 'UTF-8'; lineFeed = 'Windows'; eof = true; error = ''
+    __file: File | null = null; __text: string | null = null; __buf: string | null = null; __pos = 0; __mode = ''
+    constructor(p?: string | PickedFile) {
+      if (p && typeof p === 'object') { this.fsName = p.path; this.name = p.name; this.__file = p.file; this.__text = p.text; this.exists = !!p.file }
+      else { this.fsName = String(p ?? ''); this.name = this.fsName.split(/[\\/]/).pop() ?? '' }
+    }
+    get displayName() { return this.name }
+    get absoluteURI() { return this.fsName }
+    get fullName() { return this.fsName }
+    get path() { return this.fsName.split('/').slice(0, -1).join('/') }
+    get length() { return this.__file?.size ?? (this.__text?.length ?? 0) }
+    get modified() { return new Date(this.__file?.lastModified ?? Date.now()) }
+    get created() { return this.modified }
+    open(mode = 'r') { this.__mode = String(mode); this.__pos = 0; if (this.__mode.startsWith('w') || this.__mode.startsWith('a')) { this.__buf = this.__mode.startsWith('a') ? (this.__text ?? '') : ''; return true } this.eof = !(this.__text && this.__text.length); return this.__text !== null }
+    read(n?: number) { const t = this.__text ?? ''; const out = n === undefined ? t.slice(this.__pos) : t.slice(this.__pos, this.__pos + n); this.__pos += out.length; this.eof = this.__pos >= t.length; return out }
+    readln() { const t = this.__text ?? ''; let e = t.indexOf('\n', this.__pos); if (e < 0) e = t.length; const line = t.slice(this.__pos, e).replace(/\r$/, ''); this.__pos = e + 1; this.eof = this.__pos >= t.length; return line }
+    write(...a: unknown[]) { if (this.__buf === null) return false; this.__buf += a.map(String).join(''); return true }
+    writeln(...a: unknown[]) { return this.write(...a, '\n') }
+    close() {
+      if (this.__buf !== null && (this.__mode.startsWith('w') || this.__mode.startsWith('a'))) {
+        const url = URL.createObjectURL(new Blob([this.__buf], { type: 'text/plain' }))
+        const a = document.createElement('a'); a.href = url; a.download = this.name || 'output.txt'; a.click()
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+        this.__text = this.__buf; this.__buf = null
+      }
+      return true
+    }
+    seek(p: number) { this.__pos = Number(p) || 0; return true }
+    tell() { return this.__pos }
+    remove() { return false } rename() { return false } copy() { return false } execute() { return false } resolve() { return this }
+    getRelativeURI() { return this.fsName }
+    openDlg(_t?: string, filter = '', multi = false) { return FileStub.openDialog(_t, filter, multi) }
+    saveDlg(_t?: string, _f?: string) { return FileStub.saveDialog(_t, _f, this.name) }
+    get parent() { return new FolderStub(this.path) }
+    static openDialog(_t?: string, filter: unknown = '', multi: unknown = false) {
+      const r = takeDialog(new NeedDialog('open', !!multi, String(filter ?? '')))
+      if (!r) return null
+      const files = r.map(x => new FileStub(x))
+      return multi ? files : files[0]
+    }
+    static saveDialog(_t?: string, _f?: string, name = '') {
+      const r = takeDialog(new NeedDialog('save', false, '', name))
+      return r ? new FileStub(r[0]) : null
+    }
+    static decode(s: string) { return decodeURIComponent(s) }
+    static encode(s: string) { return encodeURIComponent(s) }
+    static get fs() { return 'Windows' }
   }
   class FolderStub {
-    name: string; fsName: string; exists = false
-    constructor(p?: string) { this.fsName = String(p ?? ''); this.name = this.fsName.split(/[\\/]/).pop() ?? '' }
-    getFiles() { return [] } create() { return false } selectDlg() { return null } execute() { return false }
+    name: string; fsName: string; exists = false; __entries: PickedFile[] = []
+    constructor(p?: string | PickedFile) {
+      if (p && typeof p === 'object') { this.fsName = p.path; this.name = p.name; this.__entries = p.children ?? []; this.exists = true }
+      else { this.fsName = String(p ?? ''); this.name = this.fsName.split(/[\\/]/).pop() ?? '' }
+    }
+    get displayName() { return this.name }
+    get absoluteURI() { return this.fsName }
+    get fullName() { return this.fsName }
+    get parent() { return new FolderStub(this.fsName.split('/').slice(0, -1).join('/')) }
+    /** Direct children (files + sub-folders) of a picked folder; mask like "*.mp4" or a function. */
+    getFiles(mask?: unknown) {
+      const base = this.fsName.replace(/\/$/, '') + '/'
+      const direct = new Map<string, FileStub | FolderStub>()
+      for (const e of this.__entries) {
+        if (!e.path.startsWith(base)) continue
+        const rest = e.path.slice(base.length)
+        const seg = rest.split('/')
+        if (seg.length === 1) direct.set(rest, new FileStub(e))
+        else if (!direct.has(seg[0])) direct.set(seg[0], new FolderStub({ name: seg[0], path: base + seg[0], file: null, text: null, isFolder: true, children: this.__entries }))
+      }
+      let out = [...direct.values()]
+      if (typeof mask === 'function') out = out.filter(f => (mask as (f: unknown) => boolean)(f))
+      else if (typeof mask === 'string' && mask && mask !== '*') {
+        const res = mask.split(/[;,]/).map(m => new RegExp('^' + m.trim().replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i'))
+        out = out.filter(f => f instanceof FolderStub || res.some(r => r.test(f.name)))
+      }
+      return out
+    }
+    create() { return false } execute() { return false } remove() { return false } resolve() { return this }
+    selectDlg() { return FolderStub.selectDialog() }
     static get myDocuments() { return new FolderStub('~/Documents') }
     static get desktop() { return new FolderStub('~/Desktop') }
     static get temp() { return new FolderStub('/tmp') }
     static get userData() { return new FolderStub('~/AppData') }
     static get appData() { return new FolderStub('~/AppData') }
-    static selectDialog() { return null }
     static get current() { return new FolderStub('.') }
+    static selectDialog(_t?: string) {
+      const r = takeDialog(new NeedDialog('folder', false, ''))
+      return r && r[0] ? new FolderStub(r[0]) : null
+    }
+    static decode(s: string) { return decodeURIComponent(s) }
+    static encode(s: string) { return encodeURIComponent(s) }
+    static get fs() { return 'Windows' }
+  }
+  class ImportOptions {
+    file: FileStub | null; importAs = 1; sequence = false; forceAlphabetical = false; rangeStart = 0; rangeEnd = 0
+    constructor(f?: FileStub) { this.file = f ?? null }
+    canImportAs() { return true }
   }
   const scope: Record<string, unknown> = {
     app, $: dollar,
@@ -750,8 +963,9 @@ export function makeScope(cb: HostCallbacks): Record<string, unknown> {
     PropertyType, PropertyValueType, KeyframeInterpolationType, KeyframeEase,
     BlendingMode: { NORMAL: 5212, ADD: 5220, SCREEN: 5218, MULTIPLY: 5216 }, TrackMatteType: { NO_TRACK_MATTE: 5012, ALPHA: 5013 },
     CloseOptions: { DO_NOT_SAVE_CHANGES: 1, PROMPT_TO_SAVE_CHANGES: 2, SAVE_CHANGES: 3 },
-    File: FileStub, Folder: FolderStub,
-    alert: (m: unknown, t?: string) => cb.alert(String(m), t),
+    File: FileStub, Folder: FolderStub, ImportOptions,
+    ImportAsType: { COMP_CROPPED_LAYERS: 1, FOOTAGE: 2, COMP: 3, PROJECT: 4 },
+    alert: (m: unknown, t?: string) => { if (!dialogPending() && !String(m).includes('__AS_NEEDS_DIALOG__')) cb.alert(String(m), t) },
     confirm: (m: unknown) => (typeof window !== 'undefined' ? window.confirm(String(m)) : false),
     prompt: (m: unknown, d?: string) => (typeof window !== 'undefined' ? window.prompt(String(m), d ?? '') : null),
     system: { callSystem: () => '', osName: 'AnimeStudio', userName: '' },

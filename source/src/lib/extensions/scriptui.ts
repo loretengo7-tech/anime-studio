@@ -5,7 +5,7 @@
  * dockable panels (thisObj instanceof Panel) and floating palettes.
  */
 import type { HostCallbacks } from './aeDom'
-import { hostSession } from './aeDom'
+import { hostSession, runWithDialogs } from './aeDom'
 
 type Handler = ((this: SUIControl, ...a: unknown[]) => unknown) | null
 
@@ -129,13 +129,13 @@ export class SUIControl {
   }
 
   // ---- window-ish
-  show() { if (this.onShow) callHandler(this, this.onShow); this.visible = true; openHook(this); return 1 }
+  show() { if (this.onShow) void callHandler(this, this.onShow).catch(() => { }); this.visible = true; openHook(this); return 1 }
   hide() { this.visible = false; closeHook(this) }
-  close(_r?: number) { if (this.onClose) callHandler(this, this.onClose); this.visible = false; closeHook(this); return 1 }
+  close(_r?: number) { if (this.onClose) void callHandler(this, this.onClose).catch(() => { }); this.visible = false; closeHook(this); return 1 }
   center() { }
   notify(ev?: string) {
     const h = ev === 'onChange' ? this.onChange : ev === 'onChanging' ? this.onChanging : this.onClick ?? this.onChange
-    if (h) callHandler(this, h)
+    if (h) void callHandler(this, h).catch(() => { })
   }
   dispatchEvent() { return true }
   addEventListener(ev: string, fn: Handler) {
@@ -148,9 +148,11 @@ export class SUIControl {
 }
 
 /** `this` inside handlers is the control; doc edits commit as one undo step. */
-export function callHandler(ctl: SUIControl, h: Handler, ...a: unknown[]) {
-  try { hostSession.run(() => h!.call(ctl, ...a)) } catch (e) { logSink(`Script error: ${e instanceof Error ? e.message : String(e)}`); throw e }
-  finally { bump() }
+export function callHandler(ctl: SUIControl, h: Handler, ...a: unknown[]): Promise<void> {
+  return runWithDialogs(() => hostSession.run(() => h!.call(ctl, ...a)))
+    .then(() => undefined)
+    .catch(e => { logSink(`Script error: ${e instanceof Error ? e.message : String(e)}`); throw e })
+    .finally(() => bump())
 }
 
 let openHook: (w: SUIControl) => void = () => { }

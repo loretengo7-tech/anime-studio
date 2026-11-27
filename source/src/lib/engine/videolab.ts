@@ -19,7 +19,8 @@ import { enhanceRenderer, type EnhanceParams } from './enhance'
 import { PairInterpolator, type InterpQuality } from './interpolation'
 import { desktopBridge } from '../media/mediaManager'
 
-export type InterpMethod = 'flow' | 'mci' | 'blend' | 'dup'
+export type InterpMethod = 'flow' | 'rife' | 'mci' | 'blend' | 'dup'
+export type NeuralModel = 'realesr-animevideov3' | 'realesrgan-x4plus-anime'
 
 export interface LabOptions {
   /** null = no enhancement pass */
@@ -36,12 +37,14 @@ export interface LabOptions {
   end: number
   bitrateMbps: number
   engine: 'gpu' | 'ffmpeg'
+  /** desktop: neural upscale with Real-ESRGAN (null = classic GPU pipeline) */
+  neuralUpscale?: { model: NeuralModel; scale: number } | null
 }
 
 export interface LabProgress { progress: number; message: string; fps?: number; eta?: number }
 
-export function labOutputSize(asset: AssetMeta, opts: Pick<LabOptions, 'enhance'>): { w: number; h: number } {
-  const s = opts.enhance && opts.enhance.upscale > 1 ? opts.enhance.upscale : 1
+export function labOutputSize(asset: AssetMeta, opts: Pick<LabOptions, 'enhance' | 'neuralUpscale'>): { w: number; h: number } {
+  const s = opts.neuralUpscale ? (opts.neuralUpscale.model === 'realesrgan-x4plus-anime' ? 4 : opts.neuralUpscale.scale) : opts.enhance && opts.enhance.upscale > 1 ? opts.enhance.upscale : 1
   let w = Math.round(asset.width * s), h = Math.round(asset.height * s)
   const cap = 3840 / Math.max(w, h)
   if (cap < 1) { w = Math.round(w * cap); h = Math.round(h * cap) }
@@ -63,7 +66,7 @@ export async function runVideoLab(
   if (opts.engine === 'ffmpeg') {
     const desk = desktopApi()
     if (!desk) throw new Error('The ffmpeg engine needs the AnimeStudio desktop app')
-    return runFfmpeg(desk, asset, opts, onProgress)
+    return runFfmpeg(desk, asset, opts, onProgress, isCancelled)
   }
   return runGpu(asset, opts, onProgress, isCancelled)
 }
@@ -73,6 +76,22 @@ export async function runVideoLab(
 interface DeskLab {
   videolab: (name: string, data: ArrayBuffer, opts: unknown) => Promise<{ name: string; data: ArrayBuffer }>
   onLabProgress: (cb: (p: { progress: number; fps?: number; speed?: string }) => void) => () => void
+  cancelLab?: () => Promise<boolean>
+  aiTools?: () => Promise<{ esrgan: boolean; rife: boolean }>
+}
+/** Neural before/after of one frame (desktop Real-ESRGAN). Returns object URLs. */
+export async function neuralFramePreview(asset: AssetMeta, time: number, model: NeuralModel, scale: number): Promise<{ before: string; after: string }> {
+  const api = (globalThis as unknown as { animeStudioDesktop?: { labPreview?: (n: string, d: ArrayBuffer, t: number, m: string, s: number) => Promise<{ before: ArrayBuffer; after: ArrayBuffer }> } }).animeStudioDesktop
+  if (!api?.labPreview) throw new Error('Neural preview needs the AnimeStudio desktop app')
+  const data = await (await fetch(asset.url)).arrayBuffer()
+  const r = await api.labPreview(asset.name, data, time, model, scale)
+  return { before: URL.createObjectURL(new Blob([r.before], { type: 'image/png' })), after: URL.createObjectURL(new Blob([r.after], { type: 'image/png' })) }
+}
+/** Which neural engines this desktop build ships (Real-ESRGAN / RIFE). */
+export async function neuralTools(): Promise<{ esrgan: boolean; rife: boolean }> {
+  const api = desktopApi()
+  if (!api?.aiTools) return { esrgan: false, rife: false }
+  try { return await api.aiTools() } catch { return { esrgan: false, rife: false } }
 }
 function desktopApi(): DeskLab | null {
   const api = (globalThis as unknown as { animeStudioDesktop?: Partial<DeskLab> }).animeStudioDesktop
@@ -80,7 +99,8 @@ function desktopApi(): DeskLab | null {
 }
 export function hasFfmpegLab(): boolean { return !!desktopApi() }
 
-async function runFfmpeg(desk: DeskLab, asset: AssetMeta, opts: LabOptions, onProgress: (p: LabProgress) => void): Promise<File> {
+async function runFfmpeg(desk: DeskLab, asset: AssetMeta, opts: LabOptions, onProgress: (p: LabProgress) => void, isCancelled: () => boolean): Promise<File> {
+  const cancelPoll = setInterval(() => { if (isCancelled()) { clearInterval(cancelPoll); void desk.cancelLab?.() } }, 300)
   onProgress({ progress: 0.01, message: 'Reading source…' })
   const data = await (await fetch(asset.url)).arrayBuffer()
   const { w, h } = labOutputSize(asset, opts)
@@ -89,7 +109,7 @@ async function runFfmpeg(desk: DeskLab, asset: AssetMeta, opts: LabOptions, onPr
     const el = (performance.now() - t0) / 1000
     onProgress({
       progress: 0.03 + p.progress * 0.95,
-      message: `ffmpeg ${opts.method === 'mci' ? 'motion-compensated' : opts.method} ${p.speed ? '· ' + p.speed : ''}`,
+      message: p.speed ? String(p.speed) : 'Working…',
       fps: p.fps,
       eta: p.progress > 0.02 ? (el / p.progress) * (1 - p.progress) : undefined,
     })
@@ -99,10 +119,14 @@ async function runFfmpeg(desk: DeskLab, asset: AssetMeta, opts: LabOptions, onPr
       start: opts.start, end: opts.end, srcFps: asset.fps || 30,
       targetFps: opts.targetFps, slowmo: opts.slowmo, method: opts.method, sceneDetect: opts.sceneDetect,
       width: w, height: h, enhance: opts.enhance, crf: Math.max(10, Math.round(26 - opts.bitrateMbps / 8)),
+      neuralUpscale: opts.neuralUpscale ?? null,
     })
     onProgress({ progress: 1, message: 'Done' })
     return new File([out.data], out.name, { type: 'video/mp4' })
-  } finally { off() }
+  } catch (e) {
+    if (isCancelled()) throw new Error('Cancelled')
+    throw e
+  } finally { off(); clearInterval(cancelPoll) }
 }
 
 // ------------------------------------------------------------------ GPU (any device)

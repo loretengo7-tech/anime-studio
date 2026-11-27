@@ -1,5 +1,21 @@
 # ANIME STUDIO — Código fuente completo
 
+## v21 — IA neuronal (RIFE + Real-ESRGAN), arreglos de scripts, Enhance y reproducción
+
+- **IA neuronal en el Video Lab (app de PC)**: RIFE 4.6 (interpolación, el modelo de Flowframes)
+  y Real-ESRGAN AnimeVideo v3 / x4plus Anime (upscale), builds oficiales ncnn-vulkan incluidos por
+  el CI en `resources/ai`. Requieren GPU con Vulkan. Vista previa antes/después neuronal.
+- **Ajustes de modelo estilo Topaz siempre visibles**: Reduce noise, Fix compression, Improve
+  detail, Sharpen, Anti-alias + botón Auto.
+- **Enhance volteado**: la cadena de pasadas GPU invertía la imagen (pasadas pares / ImageBitmap).
+  También se liberan las texturas por cuadro (antes se acumulaban en renders largos).
+- **Submenús (Window › Extensions, File › Scripts)**: estaban recortados por el scroll del menú.
+- **Scripts con diálogos** (File.openDialog, Folder.selectDialog, saveDialog) e importación
+  (app.project.importFile, ImportOptions, layers.add): el script se re-ejecuta con lo elegido.
+  Scripts sin interfaz muestran un botón *Run*.
+- **Video que "vuelve al principio"**: al pasar el final del archivo, play() rebobinaba a 0.
+  Ahora se mantiene el último cuadro (video y audio).
+
 ## v20 — AI Video Lab, extensiones/scripts de After Effects, Influx
 
 - **AI Video Lab** (botón *Video Lab* arriba, Layer > AI Video Lab, pestaña Enhance): estilo

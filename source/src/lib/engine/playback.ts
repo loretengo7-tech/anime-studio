@@ -474,7 +474,9 @@ class PlaybackEngine {
           continue
         }
         const local = time - vc.start
-        const srcTime = clipSourceTime(vc, local)
+        const rawSrc = clipSourceTime(vc, local)
+        // never ask for a time past the source's end (hold the last frame, AE-style)
+        const srcTime = Number.isFinite(el.duration) && el.duration > 0 ? Math.min(rawSrc, Math.max(0, el.duration - 0.02)) : rawSrc
         const avg = clipAverageSpeed(vc)
         const isNativeRate = !vc.timeRemap && !vc.reverse && avg >= 0.25 && avg <= 4
         const playBlocked = el.dataset.playBlocked === '1'

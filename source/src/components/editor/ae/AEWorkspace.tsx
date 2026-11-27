@@ -798,8 +798,18 @@ type Menu = { label: string; items: MenuItem[] }
 function MenuBar({ menus, right }: { menus: Menu[]; right?: ReactNode }) {
   const [open, setOpen] = useState<number | null>(null)
   const [sub, setSub] = useState<number | null>(null)
+  const [subPos, setSubPos] = useState<{ left: number; top: number; maxH: number } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const close = useCallback(() => { setOpen(null); setSub(null) }, [])
+  // submenus are positioned FIXED: inside the scrollable menu they were clipped
+  // (overflow) → invisible and not clickable (Window > Extensions, File > Scripts…)
+  const placeSub = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect()
+    const w = 260
+    const left = r.right + w > window.innerWidth ? Math.max(0, r.left - w) : r.right
+    const top = Math.max(4, Math.min(r.top - 4, window.innerHeight - 120))
+    setSubPos({ left, top, maxH: window.innerHeight - top - 8 })
+  }
   useOutsideClick(ref, close, open !== null)
   useEffect(() => {
     if (open === null) return
@@ -823,16 +833,16 @@ function MenuBar({ menus, right }: { menus: Menu[]; right?: ReactNode }) {
                 if ('sep' in it) return <div key={j} className="ae-menu-sep" />
                 if ('header' in it) return <div key={j} className="px-[26px] pt-1 pb-0.5 text-[10px] uppercase tracking-wider text-zinc-500">{it.header}</div>
                 return (
-                  <div key={j} className="relative" onPointerEnter={() => setSub(it.sub ? j : null)}>
+                  <div key={j} className="relative" onPointerEnter={e => { setSub(it.sub ? j : null); if (it.sub) placeSub(e.currentTarget) }}>
                     <button className="ae-menu-item" data-disabled={it.disabled ? '1' : '0'}
-                      onClick={() => { if (it.disabled || it.sub) { if (it.sub) setSub(j); return } close(); it.action?.() }}>
+                      onClick={e => { if (it.disabled || it.sub) { if (it.sub) { setSub(j); placeSub(e.currentTarget) } return } close(); it.action?.() }}>
                       {it.checked && <span className="ae-check">✓</span>}
                       <span>{it.label}</span>
                       {it.sc && <span className="ae-sc">{it.sc}</span>}
                       {it.sub && <span className="ae-sc">▸</span>}
                     </button>
-                    {it.sub && sub === j && (
-                      <div className="ae-menu left-full top-0 -mt-1 max-h-[70vh] overflow-y-auto as-scroll">
+                    {it.sub && sub === j && subPos && (
+                      <div className="ae-menu overflow-y-auto as-scroll" style={{ position: 'fixed', left: subPos.left, top: subPos.top, maxHeight: subPos.maxH, minWidth: 220, zIndex: 400 }}>
                         {it.sub.map((s, k) => (
                           <button key={k} className="ae-menu-item" data-disabled={s.disabled ? '1' : '0'} onClick={() => { if (s.disabled) return; close(); s.action() }}>{s.label}</button>
                         ))}

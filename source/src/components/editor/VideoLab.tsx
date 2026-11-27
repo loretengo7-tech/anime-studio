@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useEditorStore } from '@/lib/store/editorStore'
 import { ENHANCE_PRESETS, enhanceFramePreview, type EnhanceParams, type EnhancePreset } from '@/lib/engine/enhance'
-import { runVideoLab, labMotionPreview, labOutputSize, hasFfmpegLab, type InterpMethod, type LabOptions } from '@/lib/engine/videolab'
+import { runVideoLab, labMotionPreview, labOutputSize, hasFfmpegLab, neuralTools, neuralFramePreview, type InterpMethod, type LabOptions, type NeuralModel } from '@/lib/engine/videolab'
 import type { InterpQuality } from '@/lib/engine/interpolation'
 import type { AssetMeta, VideoClip } from '@/lib/engine/types'
 import { clipAverageSpeed } from '@/lib/engine/speed'
@@ -24,7 +24,8 @@ const useJob = () => useSyncExternalStore(cb => { subs.add(cb); return () => sub
 
 const UPSCALES = [1, 1.5, 2, 4]
 const FPS_PRESETS = [48, 60, 120, 144, 240]
-const METHODS: { id: InterpMethod; label: string; note: string; desktop?: boolean }[] = [
+const METHODS: { id: InterpMethod; label: string; note: string; desktop?: boolean; neural?: boolean }[] = [
+  { id: 'rife', label: 'RIFE 4.6 — neural network (AI)', note: 'The model Flowframes uses: best quality for anime and fast motion. Desktop app, GPU with Vulkan.', desktop: true, neural: true },
   { id: 'flow', label: 'Flow — GPU optical flow', note: 'Dense pyramidal optical flow, occlusion-aware warp. Any device.' },
   { id: 'mci', label: 'MCI — motion compensated (ffmpeg)', note: 'Block motion compensation with overlapped blocks, bidirectional search. Desktop app.', desktop: true },
   { id: 'blend', label: 'Blend — frame mixing', note: 'Cross-fades neighbours. Fast, ghosting on motion.' },
@@ -60,7 +61,12 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
   const [useClipRange, setUseClipRange] = useState(true)
   const [replace, setReplace] = useState(true)
   const [matchComp, setMatchComp] = useState(false)
-  const [advanced, setAdvanced] = useState(false)
+  // enhancement engine: classic GPU chain or a neural model (desktop)
+  const [engineSel, setEngineSel] = useState<'classic' | NeuralModel>('classic')
+  const [neuralScale, setNeuralScale] = useState(2)
+  const [nt, setNt] = useState({ esrgan: false, rife: false })
+  useEffect(() => { void neuralTools().then(setNt) }, [])
+  useEffect(() => { if (nt.rife) setMethod(m => (m === 'flow' ? 'rife' : m)) }, [nt.rife])
 
   const srcFps = asset?.fps || 30
   const range = useMemo(() => {
@@ -78,12 +84,13 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
     method, quality, sceneDetect,
     start: range.start, end: range.end,
     bitrateMbps: bitrate,
-    engine: interpOn && method === 'mci' ? 'ffmpeg' : 'gpu',
+    neuralUpscale: enhOn && engineSel !== 'classic' ? { model: engineSel, scale: engineSel === 'realesrgan-x4plus-anime' ? 4 : neuralScale } : null,
+    engine: (interpOn && (method === 'mci' || method === 'rife')) || (enhOn && engineSel !== 'classic') ? 'ffmpeg' : 'gpu',
   }
   const out = asset ? labOutputSize(asset, opts) : { w: 0, h: 0 }
   const factor = interpOn ? targetFps / srcFps : 1
   const outFrames = Math.round((range.end - range.start) * srcFps * factor)
-  const mciBlocked = interpOn && method === 'mci' && !desktop
+  const mciBlocked = (interpOn && ((method === 'mci' && !desktop) || (method === 'rife' && !nt.rife))) || (enhOn && engineSel !== 'classic' && !nt.esrgan)
   const nothing = !enhOn && !interpOn
 
   // ---- previews
@@ -105,7 +112,9 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
     if (!asset) return
     setPvBusy(true)
     try {
-      if (pvTab === 'enhance') {
+      if (pvTab === 'enhance' && engineSel !== 'classic') {
+        setBa(await neuralFramePreview(asset, Math.max(0, pvTime), engineSel, neuralScale))
+      } else if (pvTab === 'enhance') {
         const r = await enhanceFramePreview(asset.id, Math.max(0.05, pvTime), preset, custom)
         if (!r) throw new Error('Could not read a frame from this clip')
         setBa({ before: r.before.toDataURL('image/jpeg', 0.9), after: r.after.toDataURL('image/jpeg', 0.9) })
@@ -185,27 +194,51 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
       <div className="vl-card" data-off={enhOn ? '0' : '1'}>
         <label className="vl-h cursor-pointer"><input type="checkbox" checked={enhOn} onChange={e => setEnhOn(e.target.checked)} /><Sparkles size={13} className="text-violet-400" /> Enhancement</label>
         <div className="vl-body">
-          <div className="text-zinc-500 text-[11px] mb-1">Model</div>
-          <div className="grid grid-cols-1 gap-1">
-            {(Object.keys(ENHANCE_PRESETS) as EnhancePreset[]).map(k => (
-              <button key={k} className="vl-opt" data-on={preset === k ? '1' : '0'} onClick={() => { setPreset(k); setCustom({}) }}>
-                <span className="font-medium">{ENHANCE_PRESETS[k].label}</span>
-                <span className="text-zinc-500 text-[10.5px]">{ENHANCE_PRESETS[k].description}</span>
-              </button>
-            ))}
+          <div className="text-zinc-500 text-[11px] mb-1">AI model</div>
+          <select className="ginput w-full" value={engineSel === 'classic' ? `c:${preset}` : `n:${engineSel}`}
+            onChange={e => {
+              const v = e.target.value
+              if (v.startsWith('n:')) setEngineSel(v.slice(2) as NeuralModel)
+              else { setEngineSel('classic'); setPreset(v.slice(2) as EnhancePreset); setCustom({}) }
+            }}>
+            <optgroup label={nt.esrgan ? 'Neural (Real-ESRGAN, GPU)' : 'Neural (Real-ESRGAN) — desktop app'}>
+              <option value="n:realesr-animevideov3" disabled={!nt.esrgan}>Real-ESRGAN AnimeVideo v3 — anime video (2×/3×/4×)</option>
+              <option value="n:realesrgan-x4plus-anime" disabled={!nt.esrgan}>Real-ESRGAN x4plus Anime — max detail (4×)</option>
+            </optgroup>
+            <optgroup label="Classic GPU (any device)">
+              {(Object.keys(ENHANCE_PRESETS) as EnhancePreset[]).map(k => <option key={k} value={`c:${k}`}>{ENHANCE_PRESETS[k].label}</option>)}
+            </optgroup>
+          </select>
+          <div className="text-zinc-500 text-[10.5px] mt-1">
+            {engineSel === 'classic' ? ENHANCE_PRESETS[preset].description : engineSel === 'realesr-animevideov3' ? 'Neural network trained for anime video: rebuilds line art and removes compression in one pass.' : 'Heavier neural model with the most detail reconstruction (slow).'}
           </div>
-          <div className="text-zinc-500 text-[11px] mt-2 mb-1">Output scale</div>
+
+          <div className="text-zinc-500 text-[11px] mt-2.5 mb-1">Output scale</div>
           <div className="flex gap-1">
-            {UPSCALES.map(u => <button key={u} className="vl-chip" data-on={Math.abs(enh.upscale - u) < 0.01 ? '1' : '0'} onClick={() => setCustom(c => ({ ...c, upscale: u }))}>{u}×</button>)}
+            {engineSel === 'classic'
+              ? UPSCALES.map(u => <button key={u} className="vl-chip" data-on={Math.abs(enh.upscale - u) < 0.01 ? '1' : '0'} onClick={() => setCustom(c => ({ ...c, upscale: u }))}>{u}×</button>)
+              : (engineSel === 'realesrgan-x4plus-anime' ? [4] : [2, 3, 4]).map(u => <button key={u} className="vl-chip" data-on={(engineSel === 'realesrgan-x4plus-anime' ? 4 : neuralScale) === u ? '1' : '0'} onClick={() => setNeuralScale(u)}>{u}×</button>)}
           </div>
-          <button className="text-[11px] text-[#2d8ceb] mt-2" onClick={() => setAdvanced(a => !a)}>{advanced ? '▾' : '▸'} Fine tune</button>
-          {advanced && (['denoise', 'deblock', 'sharpen', 'detail', 'linePreserve'] as const).map(k => (
+
+          {/* Topaz-style model settings — always visible */}
+          <div className="flex items-center mt-3 mb-1">
+            <span className="text-zinc-300 text-[11.5px] font-medium flex-1">Model settings</span>
+            <button className="text-[10.5px] text-[#2d8ceb]" onClick={() => setCustom(c => ({ upscale: c.upscale }))}>Auto</button>
+          </div>
+          {([
+            ['denoise', 'Reduce noise'],
+            ['deblock', 'Fix compression'],
+            ['detail', 'Improve detail'],
+            ['sharpen', 'Sharpen'],
+            ['linePreserve', 'Anti-alias / lines'],
+          ] as const).map(([k, label]) => (
             <label key={k} className="flex items-center gap-2 mt-1">
-              <span className="w-[86px] text-zinc-400 capitalize">{k === 'linePreserve' ? 'Line protect' : k}</span>
+              <span className="w-[104px] text-zinc-400">{label}</span>
               <input type="range" className="flex-1" min={0} max={1} step={0.01} value={enh[k]} onChange={e => setCustom(c => ({ ...c, [k]: Number(e.target.value) }))} />
-              <span className="w-9 text-right as-mono text-zinc-400">{Math.round(enh[k] * 100)}</span>
+              <span className="w-8 text-right as-mono text-zinc-400">{Math.round(enh[k] * 100)}</span>
             </label>
           ))}
+          {engineSel !== 'classic' && <div className="text-[10.5px] text-zinc-500 mt-1.5">With neural models, noise/compression are cleaned before the network and sharpen/detail are applied after it.</div>}
         </div>
       </div>
 
@@ -226,8 +259,8 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
           <div className="text-zinc-500 text-[11px] mt-2 mb-1">Method</div>
           <div className="grid gap-1">
             {METHODS.map(m => (
-              <button key={m.id} className="vl-opt" data-on={method === m.id ? '1' : '0'} disabled={m.desktop && !desktop} onClick={() => setMethod(m.id)} title={m.desktop && !desktop ? 'Available in the AnimeStudio desktop app' : ''}>
-                <span className="font-medium">{m.label}{m.desktop && !desktop ? ' · desktop app' : ''}</span>
+              <button key={m.id} className="vl-opt" data-on={method === m.id ? '1' : '0'} disabled={(m.desktop && !desktop) || (m.neural && !nt.rife)} onClick={() => setMethod(m.id)} title={m.desktop && !desktop ? 'Available in the AnimeStudio desktop app' : ''}>
+                <span className="font-medium">{m.label}{(m.desktop && !desktop) || (m.neural && !nt.rife) ? ' · desktop app' : ''}</span>
                 <span className="text-zinc-500 text-[10.5px]">{m.note}</span>
               </button>
             ))}
@@ -257,7 +290,7 @@ export function VideoLab({ wide = false }: { wide?: boolean }) {
         <label className="flex items-center gap-2 mt-1 text-zinc-300"><input type="checkbox" checked={matchComp} disabled={!interpOn || slowmo} onChange={e => setMatchComp(e.target.checked)} /> Set the composition to {targetFps} fps</label>
         <div className="mt-2 text-[11px] as-mono text-zinc-400 leading-5">
           {asset.width}×{asset.height} @ {Math.round(srcFps)} → <span className="text-zinc-100">{out.w}×{out.h} @ {interpOn ? (slowmo ? `${Math.round(srcFps)} (${Math.round(factor * 10) / 10}× slow-mo)` : targetFps) : Math.round(srcFps)}</span> · {outFrames} frames
-          <br />Engine: {opts.engine === 'ffmpeg' ? 'ffmpeg (desktop)' : 'GPU (WebGL + WebCodecs)'}
+          <br />Engine: {[opts.neuralUpscale ? 'Real-ESRGAN' : '', interpOn && method === 'rife' ? 'RIFE 4.6' : '', opts.engine === 'ffmpeg' ? 'ffmpeg' : 'GPU (WebGL + WebCodecs)'].filter(Boolean).join(' + ')}
         </div>
       </div>
     </div>

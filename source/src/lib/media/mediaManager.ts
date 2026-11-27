@@ -255,6 +255,16 @@ class MediaManagerImpl implements SourceProvider {
    */
   async playAt(el: HTMLVideoElement, time: number, rate: number): Promise<boolean> {
     if (this.playPending.has(el)) return true
+    // FIX ("the video restarts from the beginning"): past the source's last frame
+    // the element must HOLD it. Calling play() on an ended element rewinds it to
+    // 0, which replayed the start of the clip over and over near its end.
+    const dur = Number.isFinite(el.duration) ? el.duration : Infinity
+    const endHold = Math.max(0, dur - 0.02)
+    if (time >= endHold) {
+      if (!el.paused) el.pause()
+      if (Math.abs(el.currentTime - endHold) > 0.03 && !el.seeking) { try { el.currentTime = endHold } catch { } }
+      return true
+    }
     const clamped = Math.max(0, time)
     const base = Math.min(16, Math.max(0.0625, rate))
     const drift = el.currentTime - clamped // + = element ahead

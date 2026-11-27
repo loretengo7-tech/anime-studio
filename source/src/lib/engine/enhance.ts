@@ -228,10 +228,13 @@ export class EnhanceRenderer {
     const vbo = gl.createBuffer()
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-      -1, -1, 0, 1,
-      1, -1, 1, 1,
-      -1, 1, 0, 0,
-      1, 1, 1, 0,
+      // uv (0,0) = bottom-left for EVERY pass: the source is uploaded with
+      // UNPACK_FLIP_Y so source and FBO textures share one orientation (an
+      // even number of passes used to come out upside down).
+      -1, -1, 0, 0,
+      1, -1, 1, 0,
+      -1, 1, 0, 1,
+      1, 1, 1, 1,
     ]), gl.STATIC_DRAW)
     this.vbo = vbo
     return gl
@@ -258,6 +261,13 @@ export class EnhanceRenderer {
     targetScale?: number
   ): Promise<HTMLCanvasElement> {
     const gl = this.ensure()
+    // UNPACK_FLIP_Y is ignored for ImageBitmap sources (WebGL spec) — normalise to a canvas
+    if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) {
+      const c = document.createElement('canvas')
+      c.width = source.width; c.height = source.height
+      c.getContext('2d')!.drawImage(source, 0, 0)
+      source = c
+    }
     const scale = targetScale ?? params.upscale
     const srcW = source.width, srcH = source.height
 
@@ -269,9 +279,12 @@ export class EnhanceRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source)
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
     this.tex = tex
 
+    const made: { t: WebGLTexture; f: WebGLFramebuffer }[] = []
     const runPass = (step: number, input: WebGLTexture, inW: number, inH: number, outW: number, outH: number): { tex: WebGLTexture; fbo: WebGLFramebuffer; w: number; h: number } => {
       const t = gl.createTexture()!
       gl.bindTexture(gl.TEXTURE_2D, t)
@@ -281,6 +294,7 @@ export class EnhanceRenderer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
       const f = gl.createFramebuffer()!
+      made.push({ t, f })
       gl.bindFramebuffer(gl.FRAMEBUFFER, f)
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0)
       gl.viewport(0, 0, outW, outH)
@@ -349,6 +363,11 @@ export class EnhanceRenderer {
       cur = { tex: r.tex, fbo: r.fbo, w: r.w, h: r.h }
     }
 
+    // nothing enabled → one neutral pass so there is an FBO to read back
+    if (!cur.fbo) {
+      const r = runPass(1, cur.tex, cur.w, cur.h, cur.w, cur.h)
+      cur = { tex: r.tex, fbo: r.fbo, w: r.w, h: r.h }
+    }
     // Read pixels from the final pass FBO into a 2D canvas
     const outCanvas = document.createElement('canvas')
     outCanvas.width = cur.w
@@ -367,7 +386,9 @@ export class EnhanceRenderer {
       imgData.data.set(pixels.subarray(srcStart, srcStart + rowBytes), dstStart)
     }
     ctx.putImageData(imgData, 0, 0)
+    for (const m of made) { gl.deleteTexture(m.t); gl.deleteFramebuffer(m.f) }
     gl.deleteTexture(tex)
+    this.tex = null
     return outCanvas
   }
 }

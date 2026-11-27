@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSPro
 import { useEditorStore } from '@/lib/store/editorStore'
 import { useExtStore, type InstalledExt, type ExtPanel } from '@/lib/extensions/store'
 import { buildPanelDoc, engineFor, extLogs, resetEngine } from '@/lib/extensions/cep'
-import { createEngine } from '@/lib/extensions/aeDom'
+import { createEngine, runWithDialogs } from '@/lib/extensions/aeDom'
 import { SUIControl, ScriptUIWindow, callHandler, subscribeSUI, suiVersion } from '@/lib/extensions/scriptui'
 import { Puzzle, Upload, Trash2, PanelRight, ExternalLink, FileCode2, X, Play } from 'lucide-react'
 
@@ -102,7 +102,7 @@ export async function runScriptFile(file: File) {
     openWindow: w => openScriptWindow(fake, w),
   })
   try {
-    eng.exec(code)
+    await runWithDialogs(() => eng.exec(code))
     toast({ kind: 'success', title: `Ran ${file.name}` })
   } catch (err) {
     toast({ kind: 'error', title: `Script error — ${file.name}`, detail: err instanceof Error ? err.message : String(err) })
@@ -143,6 +143,7 @@ function CepFrame({ ext, panel }: { ext: InstalledExt; panel: ExtPanel }) {
 function ScriptPanelHost({ ext, panel }: { ext: InstalledExt; panel: ExtPanel }) {
   const [root, setRoot] = useState<SUIControl | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [runN, setRunN] = useState(0)
   useEffect(() => {
     const code = new TextDecoder().decode(ext.files[ext.scriptPath ?? ''] ?? new Uint8Array())
     const cb = {
@@ -157,15 +158,21 @@ function ScriptPanelHost({ ext, panel }: { ext: InstalledExt; panel: ExtPanel })
     p.orientation = 'column'
     cb.panel = p
     eng.scope.__thisPanel = p
-    try {
-      eng.exec(`(function(){\n${code}\n}).call(__thisPanel)`)
-      setRoot(p)
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setRoot(p) }
-  }, [ext, panel])
+    let alive = true
+    runWithDialogs(() => { p.children = []; return eng.exec(`(function(){\n${code}\n}).call(__thisPanel)`) })
+      .then(() => { if (alive) setRoot(p) })
+      .catch(e => { if (alive) { setErr(e instanceof Error ? e.message : String(e)); setRoot(p) } })
+    return () => { alive = false }
+  }, [ext, panel, runN])
   return (
     <div className="p-2 text-[12px] h-full overflow-auto as-scroll">
       {err && <div className="text-red-400 text-[11px] mb-2">Script error: {err}</div>}
-      {root && (root.children.length ? <ScriptUIView node={root} /> : !err && <div className="text-zinc-500 text-[11px]">The script ran (no dockable UI). Its windows open as floating palettes.</div>)}
+      {root && (root.children.length ? <ScriptUIView node={root} /> : (
+        <div className="text-zinc-400 text-[11.5px] space-y-2">
+          <div>{err ? '' : 'This script has no panel of its own: it runs an action (and may open its own windows).'}</div>
+          <button className="gbtn gbtn-accent h-8 px-4 flex items-center gap-1.5" onClick={() => { setErr(null); setRunN(n => n + 1) }}><Play size={13} /> Run {panel.name}</button>
+        </div>
+      ))}
     </div>
   )
 }
@@ -208,7 +215,7 @@ export function ScriptUIView({ node }: { node: SUIControl }) {
 
 function fire(node: SUIControl, h: 'onClick' | 'onChange' | 'onChanging' | 'onDoubleClick') {
   const fn = node[h] as ((this: SUIControl) => unknown) | null
-  if (fn) { try { callHandler(node, fn) } catch (e) { useEditorStore.getState().toast({ kind: 'error', title: 'Script error', detail: e instanceof Error ? e.message : String(e) }) } }
+  if (fn) callHandler(node, fn).catch(e => useEditorStore.getState().toast({ kind: 'error', title: 'Script error', detail: e instanceof Error ? e.message : String(e) }))
 }
 
 function SUIItem({ node }: { node: SUIControl }): ReactNode {

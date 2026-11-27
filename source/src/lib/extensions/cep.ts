@@ -6,7 +6,7 @@
  * `evalScript()` runs in the extension's ExtendScript engine (aeDom.ts),
  * which loads the bundle's host .jsx once and keeps its functions alive.
  */
-import { createEngine, type ScriptEngine } from './aeDom'
+import { createEngine, runWithDialogs, type ScriptEngine } from './aeDom'
 import type { InstalledExt, ExtPanel } from './store'
 import { useExtStore } from './store'
 import { useEditorStore } from '@/lib/store/editorStore'
@@ -41,7 +41,7 @@ export function resetEngine(id: string) { engines.delete(id) }
 type Listener = { type: string; fn: (e: unknown) => void; win: Window }
 const evListeners: Listener[] = []
 let busy = false
-const queue: (() => void)[] = []
+const queue: (() => Promise<void>)[] = []
 
 function cepResult(v: unknown): string {
   if (v === undefined) return 'undefined'
@@ -52,19 +52,19 @@ function cepResult(v: unknown): string {
 
 const bridge = {
   evalScript(extId: string, script: string, cb?: (r: string) => void) {
-    const run = () => {
+    const run = async () => {
       const ext = useExtStore.getState().list.find(e => e.id === extId)
       let out = 'EvalScript error.'
       if (ext) {
         busy = true
-        try { out = cepResult(engineFor(ext).exec(String(script))) } catch (err) {
+        try { out = cepResult(await runWithDialogs(() => engineFor(ext).exec(String(script)))) } catch (err) {
           pushLog(extId, `evalScript error: ${err instanceof Error ? err.message : String(err)} ← ${String(script).slice(0, 120)}`)
           out = 'EvalScript error.'
         } finally { busy = false }
       }
-      setTimeout(() => { try { cb?.(out) } catch { } ; if (queue.length) queue.shift()!() }, 0)
+      setTimeout(() => { try { cb?.(out) } catch { } ; if (queue.length) void queue.shift()!() }, 0)
     }
-    if (busy) queue.push(run); else run()
+    if (busy) queue.push(run); else void run()
   },
   listPanels(extId: string) {
     const ext = useExtStore.getState().list.find(e => e.id === extId)

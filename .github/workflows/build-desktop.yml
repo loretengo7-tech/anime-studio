@@ -55,6 +55,25 @@ jobs:
       - name: Install desktop deps (Electron + ffmpeg for Windows)
         working-directory: source/desktop
         run: npm install --no-audit --no-fund
+      - name: Bundle neural AI tools (Real-ESRGAN + RIFE, ncnn-vulkan official builds)
+        working-directory: source/desktop
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force ai, ai\realesrgan\models, ai\rife | Out-Null
+          Invoke-WebRequest https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip -OutFile esr.zip
+          Expand-Archive esr.zip -DestinationPath esr
+          Copy-Item esr\realesrgan-ncnn-vulkan.exe, esr\vcomp140.dll ai\realesrgan\
+          Copy-Item esr\models\realesr-animevideov3-x2.*, esr\models\realesr-animevideov3-x3.*, esr\models\realesr-animevideov3-x4.*, esr\models\realesrgan-x4plus-anime.* ai\realesrgan\models\
+          Invoke-WebRequest https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip -OutFile rife.zip
+          Expand-Archive rife.zip -DestinationPath rife
+          $r = 'rife\rife-ncnn-vulkan-20221029-windows'
+          Copy-Item "$r\rife-ncnn-vulkan.exe" ai\rife\
+          Get-ChildItem $r -Filter *.dll | Copy-Item -Destination ai\rife\
+          Copy-Item "$r\rife-v4.6" ai\rife\ -Recurse
+          Copy-Item "$r\LICENSE" ai\rife\LICENSE.txt
+          Remove-Item esr, rife, esr.zip, rife.zip -Recurse -Force
+          Get-ChildItem ai -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
       - name: Package (NSIS installer + portable exe)
         working-directory: source/desktop
         env:
@@ -75,6 +94,9 @@ jobs:
             Get-Process AnimeStudio -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             if (Test-Path $env:AS_SMOKE) { Write-Host "OK  $($t.name) rendered" } else { Write-Host "FAIL $($t.name)"; $fails += $t.name }
             Start-Sleep -Seconds 2
+          }
+          foreach ($exe in 'C:\ASInstall\resources\ai\realesrgan\realesrgan-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-ncnn-vulkan.exe', 'C:\ASInstall\resources\ai\rife\rife-v4.6\flownet.bin') {
+            if (Test-Path $exe) { Write-Host "OK  bundled $exe" } else { Write-Host "FAIL missing $exe"; $fails += 'ai' }
           }
           Write-Host '--- main.log ---'
           Get-Content "$env:APPDATA\AnimeStudio\logs\main.log" -ErrorAction SilentlyContinue
@@ -107,6 +129,8 @@ jobs:
 
             Diferencias con la web: GPU forzada, sin límites de pestaña, más RAM para el RAM Preview,
             ffmpeg incluido (abre MKV/HEVC/AVI/ProRes y crea proxies rápidos automáticamente).
+            IA neuronal incluida en el Video Lab: Real-ESRGAN (AnimeVideo v3 / x4plus Anime) y RIFE 4.6
+            (requieren una GPU con Vulkan: NVIDIA / AMD / Intel con drivers actualizados).
 
             Windows puede mostrar "SmartScreen" porque el .exe no está firmado: *Más información → Ejecutar de todas formas*.
 

@@ -209,7 +209,11 @@ export class AudioEngine {
         if (Math.abs(el.playbackRate - rateClamped) > rateClamped * 0.07) {
           try { el.playbackRate = rateClamped } catch { }
         }
-        if (playing) {
+        const aEnd = Number.isFinite(el.duration) ? el.duration - 0.02 : Infinity
+        if (playing && srcTime >= aEnd) {
+          // past the end of the audio file: stay silent instead of play() rewinding to 0
+          if (!el.paused) el.pause()
+        } else if (playing) {
           // FIX (choppy audio): never seek a playing audio clip for small
           // drift (that was an audible click/gap every ~second) — steer it
           // with a tiny rate nudge; hard-seek only on real jumps.
