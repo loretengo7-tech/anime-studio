@@ -196,17 +196,23 @@ async function callGemini(p: Provider, system: string, messages: unknown[], maxT
         : b.type === 'image' && b.source?.data ? [{ inline_data: { mime_type: b.source.media_type ?? 'image/jpeg', data: b.source.data } }]
         : []),
   })).filter(c => c.parts.length)
-  const models = [p.model, ...(p.model === 'gemini-flash-latest' ? [] : ['gemini-flash-latest'])]
+  // busy (503/429) or slow models are common on the free tier: try a few, within one time budget
+  // (the platform kills the function at ~150 s, which the app sees as "Failed to send a request")
+  const models = [...new Set([p.model, 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'])]
+  const deadline = Date.now() + 120_000
   let last = ''
   for (const model of models) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+    const left = deadline - Date.now()
+    if (left < 8000) break
+    let r: Response
+    try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': p.key },
       body: JSON.stringify({ ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), contents, generationConfig: { maxOutputTokens: Math.max(maxTokens, 8192) } }),
-      signal: AbortSignal.timeout(140_000),
-    })
+      signal: AbortSignal.timeout(Math.min(75_000, left)),
+    }) } catch (e) { last = `${model}: ${e instanceof Error ? e.name : 'error'} (too slow)`; continue }
     const j = await r.json().catch(() => ({})) as { error?: { message?: string }; candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }; modelVersion?: string }
-    if (!r.ok) { last = `${model}: ${r.status} ${(j.error?.message ?? '').slice(0, 200)}`; if (r.status === 404) continue; throw new Error(`Gemini ${last}`) }
+    if (!r.ok) { last = `${model}: ${r.status} ${(j.error?.message ?? '').slice(0, 200)}`; if ([404, 429, 500, 503, 504].includes(r.status)) continue; throw new Error(`Gemini ${last}`) }
     const c = j.candidates?.[0]
     const text = (c?.content?.parts ?? []).filter(x => !x.thought).map(x => x.text ?? '').join('')
     const fr = c?.finishReason ?? ''
