@@ -168,7 +168,7 @@ export function ProjectPanel() {
           </div>
         ))}
         {doc.assets.length === 0 && (
-          <button className="m-3 w-[calc(100%-24px)] py-6 border border-dashed border-[#444] text-zinc-500 text-[12px] hover:text-zinc-200 hover:border-zinc-500 flex flex-col items-center gap-1.5" onClick={pickAndImport}>
+          <button className="m-3 w-[calc(100%-24px)] py-6 border border-dashed border-[#444] text-zinc-500 text-[12px] hover:text-zinc-200 hover:border-zinc-500 flex flex-col items-center gap-1.5" onClick={() => pickAndImport()}>
             <Upload size={18} />
             Double-click / drop files here to import footage
           </button>
@@ -181,7 +181,8 @@ export function ProjectPanel() {
 
       {/* bottom bar */}
       <div className="h-7 shrink-0 flex items-center gap-0.5 px-1 border-t border-black/60 bg-[#202020]">
-        <button className="tb-btn !w-7 !h-6" title="Import File… (Ctrl+I)" onClick={pickAndImport}><Upload size={13} /></button>
+        <button className="tb-btn !w-7 !h-6" title="Import File… (Ctrl+I)" onClick={() => pickAndImport()}><Upload size={13} /></button>
+        <button className="tb-btn !w-auto !h-6 px-1.5 text-[10px] font-semibold tracking-wide text-sky-300" title="Import with Influx — any format (AVI, WMV, MXF, MTS, ProRes, GIF…), keeps transparency (desktop app)" onClick={() => pickAndImport(true)}>INFLUX</button>
         <button className="tb-btn !w-7 !h-6" title="Composition Settings (Ctrl+K)" onClick={() => setDialog('comp')}><FolderPlus size={13} /></button>
         <button className="tb-btn !w-7 !h-6" title="Create Proxy (lighter preview)" disabled={!asset || asset.kind !== 'video'} onClick={() => asset && void makeProxy(asset)}><Zap size={13} /></button>
         <button className="tb-btn !w-7 !h-6" title="Add to Composition" disabled={!asset} onClick={() => asset && addAssetLayer(asset)}><Clapperboard size={13} /></button>

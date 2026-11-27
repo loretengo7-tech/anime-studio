@@ -29,6 +29,8 @@ import { SettingsPanel } from './SettingsPanel'
 import { MobileWorkspace } from './MobileWorkspace'
 import { BeatSyncPanel } from './BeatSyncPanel'
 import { CutoutPanel } from './CutoutPanel'
+import { VideoLab } from './VideoLab'
+import { ExtensionsPanel } from './ExtensionsPanel'
 import { AEWorkspace } from './ae/AEWorkspace'
 import {
   AssetsPanel, EffectsPanel, TextPanel, ColorPanel, CompPanel, ProjectsPanel, StatusPanel, PluginsPanel,
@@ -270,7 +272,7 @@ export function Workspace() {
     audio: { title: 'Audio & Beats', el: <AudioPanel /> },
     text: { title: 'Text Layers', el: <TextPanel /> },
     color: { title: 'Color & LUTs', el: <ColorPanel /> },
-    enhance: { title: 'Detail Restore', el: <EnhancePanel /> },
+    enhance: { title: 'Enhance', el: <EnhancePanel /> },
     tracker: { title: 'Motion Tracker', el: <TrackerPanel /> },
     ai: { title: 'AI Assistant', el: <AIAssistant /> },
     projects: { title: 'Projects', el: <ProjectsPanel /> },
@@ -280,6 +282,8 @@ export function Workspace() {
     export: { title: 'Export & Render', el: <ExportDialog /> },
     beatsync: { title: 'Beat Sync', el: <BeatSyncPanel /> },
     cutout: { title: 'AI Cut-out', el: <CutoutPanel /> },
+    videolab: { title: 'AI Video Lab', el: <VideoLab /> },
+    extensions: { title: 'Extensions & Scripts', el: <ExtensionsPanel /> },
   }
 
   // which panels dock on the right (desktop); everything else opens as a sheet

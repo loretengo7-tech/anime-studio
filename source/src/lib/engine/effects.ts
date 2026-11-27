@@ -580,6 +580,10 @@ export const EFFECT_DEFS: EffectDef[] = [
       { key: 'fps', label: 'Frame Rate', min: 1, max: 60, step: 1, default: 12, uniform: 'posterizeFps' },
     ],
   },
+  // ---- Expression Controls (AE): pure data holders scripts/expressions read
+  { type: 'slider_control', name: 'Slider Control', category: 'time', pack: 'Expression Controls', description: 'Number other properties can read with expressions / scripts.', params: [{ key: 'Slider', label: 'Slider', min: -1000000, max: 1000000, step: 0.01, default: 0, uniform: '' }] },
+  { type: 'checkbox_control', name: 'Checkbox Control', category: 'time', pack: 'Expression Controls', description: 'On/off value for expressions / scripts.', params: [{ key: 'Checkbox', label: 'Checkbox', min: 0, max: 1, step: 1, default: 0, uniform: '' }] },
+  { type: 'angle_control', name: 'Angle Control', category: 'time', pack: 'Expression Controls', description: 'Angle value for expressions / scripts.', params: [{ key: 'Angle', label: 'Angle', min: -36000, max: 36000, step: 0.1, default: 0, uniform: '' }] },
   ...FX_PACK_DEFS,
 ]
 

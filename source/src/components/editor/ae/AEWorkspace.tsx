@@ -21,6 +21,9 @@ import { PreviewMonitor } from '../PreviewMonitor'
 import { Inspector } from '../Inspector'
 import { downloadProjectFile } from '@/lib/media/projectFile'
 import { AETimeline } from './AETimeline'
+import { VideoLab } from '../VideoLab'
+import { ExtensionsPanel, ExtensionView, ExtensionFloatingWindows, runScriptFile, useExtensionsLoaded } from '../ExtensionsPanel'
+import { useExtStore } from '@/lib/extensions/store'
 import {
   ProjectPanel, EffectsPresetsPanel, InfoPanel, PreviewPanel, AlignPanel, CompSettingsDialog, ShortcutsPanel,
   applyEffectToClip, useOutsideClick,
@@ -33,7 +36,7 @@ import {
 } from './aeActions'
 import {
   MousePointer2, Hand, ZoomIn, RotateCw, Move, Square, Circle, PenTool, Type, Home, Download,
-  ChevronDown, ChevronRight, X, Sparkles, CheckCircle2, AlertTriangle, Undo2, Redo2,
+  ChevronDown, ChevronRight, X, Sparkles, CheckCircle2, AlertTriangle, Undo2, Redo2, Wand2,
 } from 'lucide-react'
 
 type PanelEl = { title: string; el: ReactNode }
@@ -58,7 +61,9 @@ const RIGHT_TABS: { id: string; title: string; panel?: string }[] = [
   { id: 'audio', title: 'Audio', panel: 'audio' },
   { id: 'tracker', title: 'Tracker', panel: 'tracker' },
   { id: 'speed', title: 'Time Remap', panel: 'speed' },
-  { id: 'enhance', title: 'Detail Restore', panel: 'enhance' },
+  { id: 'enhance', title: 'Enhance', panel: 'enhance' },
+  { id: 'videolab', title: 'AI Video Lab', panel: 'videolab' },
+  { id: 'extensions', title: 'Extensions', panel: 'extensions' },
   { id: 'ai', title: 'AI Assistant', panel: 'ai' },
   { id: 'plugins', title: 'Plugins', panel: 'plugins' },
 ]
@@ -67,6 +72,7 @@ const RIGHT_TABS: { id: string; title: string; panel?: string }[] = [
 const DIALOGS: Record<string, string> = {
   comp: 'Composition Settings', export: 'Render Queue', projects: 'Projects', settings: 'Preferences',
   status: 'Feature Status', shortcuts: 'Keyboard Shortcuts', graph: 'Graph Editor', about: 'About ANIME STUDIO',
+  videolab: 'AI Video Lab — Enhance · Upscale · Frame Interpolation',
 }
 
 export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
@@ -85,6 +91,16 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
   const activePanel = useEditorStore(s => s.activePanel)
   const setPanel = useEditorStore(s => s.setPanel)
   const jobs = useEditorStore(s => s.jobs)
+  useExtensionsLoaded()
+  const extList = useExtStore(s => s.list)
+  const extDocked = useExtStore(s => s.docked)
+  const openFloatingExt = useExtStore(s => s.openFloating)
+  const extTabs = extDocked.map(k => {
+    const [extId, panelId] = k.split('|')
+    const p = extList.find(e => e.id === extId)?.panels.find(x => x.id === panelId)
+    return p ? { id: `ext:${k}`, title: p.name, extId, panelId } : null
+  }).filter(Boolean) as { id: string; title: string; extId: string; panelId: string }[]
+  const allRightTabs = [...RIGHT_TABS.map(t => ({ id: t.id, title: t.title })), ...extTabs.map(t => ({ id: t.id, title: t.title }))]
 
   const tool = useUIStore(s => s.tool)
   const setTool = useUIStore(s => s.setTool)
@@ -212,7 +228,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         if (lower === 'o') return run(() => setDialog('projects'))
         if (lower === 'k') return run(() => setDialog('comp'))
         if (lower === 'm') return run(() => setDialog('export'))
-        if (lower === 'i') return run(pickAndImport)
+        if (lower === 'i') return run(() => pickAndImport())
         if (lower === 's' && sh) return run(() => void downloadProjectFile(s.doc))
         if (lower === 's') return run(() => { s.saveLocal(); s.toast({ kind: 'success', title: 'Project saved', detail: 'Saved on this device. Ctrl+Shift+S downloads a project file.' }) })
         if (lower === 'e' && sh) return run(() => { for (const id of ids()) patchClip(id, c => { c.effects = [] }) })
@@ -319,7 +335,16 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Save', sc: 'Ctrl+S', action: () => { useEditorStore.getState().saveLocal(); useEditorStore.getState().toast({ kind: 'success', title: 'Project saved' }) } },
         { label: 'Save As… (download project file)', sc: 'Ctrl+Shift+S', action: () => void downloadProjectFile(useEditorStore.getState().doc) },
         { sep: true },
-        { label: 'Import File…', sc: 'Ctrl+I', action: pickAndImport },
+        { label: 'Import File…', sc: 'Ctrl+I', action: () => pickAndImport() },
+        { label: 'Import with Influx… (any format, keeps alpha)', action: () => pickAndImport(true) },
+        { sep: true },
+        {
+          label: 'Scripts', sub: [
+            { label: 'Run Script File…', action: () => { const i = document.createElement('input'); i.type = 'file'; i.accept = '.jsx,.js'; i.onchange = () => { const f = i.files?.[0]; if (f) void runScriptFile(f) }; i.click() } },
+            { label: 'Install Script or Extension (.jsx / .zxp)…', action: () => setDocks({ rightTab: 'extensions', rightCollapsed: false }) },
+            ...extList.filter(e => e.kind === 'script').map(e => ({ label: e.name, action: () => openFloatingExt(e.id, 'main') })),
+          ],
+        },
         { sep: true },
         { label: 'Export ▸ Add to Render Queue', sc: 'Ctrl+M', action: () => setDialog('export') },
         { sep: true },
@@ -370,6 +395,8 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Shape Layer', action: () => newLayer('shape') },
         { label: 'Null Object', sc: 'Ctrl+Alt+Shift+Y', action: () => newLayer('null') },
         { label: 'Camera…', action: () => newLayer('camera') },
+        { sep: true },
+        { label: 'AI Video Lab (Enhance / Interpolate)…', action: () => setDialog('videolab') },
         { label: 'Adjustment Layer', sc: 'Ctrl+Alt+Y', action: () => newLayer('adjustment') },
         { sep: true },
         { label: 'Pre-compose…', sc: 'Ctrl+Shift+C', disabled: !hasSel, action: () => { precomposeSelected() } },
@@ -449,6 +476,14 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
         { label: 'Project', action: () => setDocks({ leftTab: 'project' }) },
         ...RIGHT_TABS.map(t => ({ label: t.title, checked: docks.rightTab === t.id && !docks.rightCollapsed, action: () => setDocks({ rightTab: t.id, rightCollapsed: false }) })),
         { sep: true },
+        {
+          label: 'Extensions', sub: extList.length ? extList.flatMap(e => e.panels.filter(p => p.type === 'Panel' || e.kind === 'script').map(p => ({
+            label: p.name,
+            action: () => { const k = `${e.id}|${p.id}`; if (extDocked.includes(k)) setDocks({ rightTab: `ext:${k}`, rightCollapsed: false }); else openFloatingExt(e.id, p.id) },
+          }))) : [{ label: 'No extensions — install one…', action: () => setDocks({ rightTab: 'extensions', rightCollapsed: false }) }],
+        },
+        { label: 'AI Video Lab', action: () => setDialog('videolab') },
+        { sep: true },
         { label: 'Render Queue', sc: 'Ctrl+M', action: () => setDialog('export') },
         { label: 'Feature Status', action: () => setDialog('status') },
       ],
@@ -462,8 +497,13 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
     },
   ]
 
+  const extTab = extTabs.find(t => t.id === docks.rightTab)
   const rightTabDef = RIGHT_TABS.find(t => t.id === docks.rightTab) ?? RIGHT_TABS[0]
-  const rightBody = rightTabDef.id === 'effects' ? <EffectsPresetsPanel /> : panels[rightTabDef.panel!]?.el
+  const rightBody = extTab ? <ExtensionView key={extTab.id} extId={extTab.extId} panelId={extTab.panelId} />
+    : rightTabDef.id === 'effects' ? <EffectsPresetsPanel />
+      : rightTabDef.id === 'videolab' ? <VideoLab />
+        : rightTabDef.id === 'extensions' ? <ExtensionsPanel />
+          : panels[rightTabDef.panel!]?.el
   const activeJob = jobs.find(j => j.status === 'running')
 
   const tools: { id: ToolId; icon: ReactNode; tip: string }[] = [
@@ -509,6 +549,7 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
             <button key={w} className="ae-ws-btn" data-on={workspace === w ? '1' : '0'} onClick={() => applyWorkspace(w)}>{w[0].toUpperCase() + w.slice(1)}</button>
           ))}
         </div>
+        <button className="gbtn h-[24px] px-3 text-[12px] mr-1.5 !text-violet-200 !border-violet-500/50" onClick={() => setDialog('videolab')} title="AI Video Lab: enhance / upscale / frame interpolation (up to 240 fps)"><Wand2 size={13} /> Video Lab</button>
         <button className="gbtn gbtn-accent h-[24px] px-3 text-[12px]" onClick={() => setDialog('export')} title="Add to Render Queue (Ctrl+M)"><Download size={13} /> Export</button>
       </div>
 
@@ -551,10 +592,10 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
               {docks.alignOpen && <Section title="Align" onClose={() => setDocks({ alignOpen: false })}><AlignPanel /></Section>}
               <Panel
                 className="flex-1" active={focus === 'right'} onFocus={() => setFocus('right')}
-                tabs={RIGHT_TABS.map(t => ({ id: t.id, title: t.title }))} tab={docks.rightTab} onTab={id => setDocks({ rightTab: id })}
+                tabs={allRightTabs} tab={allRightTabs.some(t => t.id === docks.rightTab) ? docks.rightTab : 'effects'} onTab={id => setDocks({ rightTab: id })}
                 onClose={() => setDocks({ rightCollapsed: true })}
               >
-                <div className="h-full min-h-0 overflow-auto as-scroll ae-sheet">{rightBody}</div>
+                <div className={`h-full min-h-0 overflow-auto as-scroll ae-sheet ${extTab ? 'flex flex-col' : ''}`}>{rightBody}</div>
               </Panel>
             </div>
           </>
@@ -583,9 +624,12 @@ export function AEWorkspace({ panels }: { panels: Record<string, PanelEl> }) {
           {dialog === 'comp' ? <CompSettingsDialog onClose={() => setDialog(null)} />
             : dialog === 'shortcuts' ? <ShortcutsPanel />
               : dialog === 'about' ? <About />
+              : dialog === 'videolab' ? <VideoLab wide />
                 : <div className="w-[480px] max-w-full ae-sheet">{panels[dialog]?.el}</div>}
         </FloatingWindow>
       )}
+
+      <ExtensionFloatingWindows />
 
       {/* ---------- toasts ---------- */}
       <div className="absolute bottom-3 right-3 z-[300] w-[340px] space-y-1.5 pointer-events-none">
@@ -611,18 +655,73 @@ function Panel({ tabs, tab, onTab, children, className = '', style, active, onFo
   tabs: { id: string; title: string }[]; tab: string; onTab: (id: string) => void; children: ReactNode
   className?: string; style?: React.CSSProperties; active?: boolean; onFocus?: () => void; onClose?: () => void; tabIcon?: boolean
 }) {
+  // Tab strip overflow (AE-style): mouse wheel scrolls the strip sideways,
+  // ‹ › arrows appear when tabs are hidden, and » lists every tab.
+  const strip = useRef<HTMLDivElement>(null)
+  const [ov, setOv] = useState({ l: false, r: false })
+  const [listOpen, setListOpen] = useState(false)
+  const measure = () => {
+    const el = strip.current
+    if (!el) return
+    const l = el.scrollLeft > 2, r = el.scrollLeft + el.clientWidth < el.scrollWidth - 2
+    setOv(o => (o.l === l && o.r === r ? o : { l, r }))
+  }
+  useEffect(() => {
+    const el = strip.current
+    if (!el) return
+    const wheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return
+      const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+      if (!d) return
+      e.preventDefault()
+      el.scrollLeft += d
+      measure()
+    }
+    el.addEventListener('wheel', wheel, { passive: false })
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    measure()
+    return () => { el.removeEventListener('wheel', wheel); ro.disconnect() }
+  }, [])
+  useEffect(() => {
+    const el = strip.current?.querySelector<HTMLElement>('[data-on="1"]')
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    measure()
+  }, [tab, tabs.length])
+  const nudge = (dir: number) => { const el = strip.current; if (el) { el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' }); setTimeout(measure, 350) } }
+  const many = tabs.length > 1
   return (
     <div className={`ae-panel ${className}`} style={style} data-active={active ? '1' : '0'} onPointerDownCapture={onFocus}>
-      <div className="ae-tabs">
-        {tabs.map(t => (
-          <button key={t.id} className="ae-tab" data-on={t.id === tab ? '1' : '0'} onClick={() => onTab(t.id)}>
-            {tabIcon && <span className="w-[9px] h-[9px] rounded-[1px] bg-[#a89677]" />}
-            <span className="truncate max-w-[220px]">{t.title}</span>
-            {onClose && t.id === tab && <X size={11} className="ae-tab-x" onClick={e => { e.stopPropagation(); onClose() }} />}
-          </button>
-        ))}
-        <div className="flex-1" />
-        <span className="px-2 flex items-center text-zinc-600 text-[13px] select-none" title="Panel menu">≡</span>
+      <div className="flex shrink-0 relative bg-[#1f1f1f]">
+        {ov.l && <button className="ae-tabs-arrow" onClick={() => nudge(-1)} aria-label="Previous tabs"><ChevronRight size={12} className="rotate-180" /></button>}
+        <div ref={strip} className="ae-tabs flex-1 min-w-0" onScroll={measure}>
+          {tabs.map(t => (
+            <button key={t.id} className="ae-tab" data-on={t.id === tab ? '1' : '0'} onClick={() => onTab(t.id)}>
+              {tabIcon && <span className="w-[9px] h-[9px] rounded-[1px] bg-[#a89677]" />}
+              <span className="truncate max-w-[220px]">{t.title}</span>
+              {onClose && t.id === tab && <X size={11} className="ae-tab-x" onClick={e => { e.stopPropagation(); onClose() }} />}
+            </button>
+          ))}
+        </div>
+        {ov.r && <button className="ae-tabs-arrow" onClick={() => nudge(1)} aria-label="More tabs"><ChevronRight size={12} /></button>}
+        {many ? (
+          <button className="px-2 flex items-center text-zinc-500 hover:text-white text-[13px] select-none border-b border-[#141414]" title="All panels in this group" onClick={() => setListOpen(o => !o)}>»</button>
+        ) : (
+          <span className="px-2 flex items-center text-zinc-600 text-[13px] select-none border-b border-[#141414]" title="Panel menu">≡</span>
+        )}
+        {listOpen && (
+          <>
+            <div className="fixed inset-0 z-[180]" onPointerDown={() => setListOpen(false)} />
+            <div className="ae-menu right-0 top-[28px] z-[190] max-h-[60vh] overflow-y-auto as-scroll">
+              {tabs.map(t => (
+                <button key={t.id} className="ae-menu-item w-full" onClick={() => { onTab(t.id); setListOpen(false) }}>
+                  <span className="w-4 text-[#2d8ceb]">{t.id === tab ? '✓' : ''}</span>
+                  <span className="flex-1 text-left">{t.title}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <div className="flex-1 min-h-0 flex flex-col">{children}</div>
     </div>

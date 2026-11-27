@@ -431,6 +431,8 @@ input[type="range"].as-range::-moz-range-thumb { height: 12px; width: 12px; bord
 .ae-panel[data-active="1"] { border-color: var(--ae-accent); box-shadow: 0 0 0 1px rgba(45,140,235,0.25); }
 .ae-tabs { height: 28px; flex-shrink: 0; display: flex; align-items: stretch; background: #1f1f1f; border-bottom: 1px solid #141414; overflow-x: auto; scrollbar-width: none; }
 .ae-tabs::-webkit-scrollbar { display: none; }
+.ae-tabs-arrow { width: 18px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: #bbb; background: #262626; border-bottom: 1px solid #141414; border-right: 1px solid #141414; }
+.ae-tabs-arrow:hover { color: #fff; background: #333; }
 .ae-tab { display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 12px; color: #9a9a9a; white-space: nowrap; border-right: 1px solid #141414; position: relative; }
 .ae-tab:hover { color: #e6e6e6; }
 .ae-tab[data-on="1"] { color: #ececec; background: var(--ae-panel); }
@@ -493,3 +495,28 @@ input, textarea, select { font-size: 16px; }
 @media (pointer: fine) {
   .ae-app input, .ae-app select, .ae-app textarea { font-size: 12px; }
 }
+
+/* ---- AI Video Lab ---- */
+.vl-card { background: #232323; border: 1px solid #141414; border-radius: 4px; padding: 10px; }
+.vl-card[data-off="1"] .vl-body { opacity: .4; pointer-events: none; }
+.vl-h { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #e8e8e8; margin-bottom: 8px; }
+.vl-opt { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; padding: 6px 8px; border-radius: 3px; background: #1b1b1b; border: 1px solid #141414; color: #ddd; }
+.vl-opt:hover:not(:disabled) { border-color: #3a3a3a; }
+.vl-opt[data-on="1"] { border-color: #2d8ceb; background: #1d2a38; }
+.vl-opt:disabled { opacity: .45; }
+.vl-chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 3px; background: #1b1b1b; border: 1px solid #141414; color: #ccc; font-size: 11.5px; }
+.vl-chip:hover { border-color: #3a3a3a; }
+.vl-chip[data-on="1"] { background: #2d8ceb; border-color: #2d8ceb; color: #fff; }
+/* ---- ScriptUI (AE .jsx panels) ---- */
+.sui { color: #d6d6d6; font-size: 12px; }
+.sui-panel { position: relative; border: 1px solid #3a3a3a; border-radius: 3px; margin-top: 8px; padding-top: 14px !important; }
+.sui-panel-t { position: absolute; top: -8px; left: 8px; padding: 0 4px; background: #232323; color: #bbb; font-size: 11px; }
+.sui-btn { height: 24px; padding: 0 12px; border-radius: 3px; background: #3a3a3a; border: 1px solid #141414; color: #eee; font-size: 12px; white-space: nowrap; }
+.sui-btn:hover:not(:disabled) { background: #474747; }
+.sui-btn:active:not(:disabled) { background: #2d8ceb; }
+.sui-btn:disabled { opacity: .45; }
+.sui-text { color: #ccc; }
+.sui-input { height: 24px; }
+.sui-list { background: #1b1b1b; border: 1px solid #141414; border-radius: 3px; overflow: auto; }
+.sui-li { padding: 2px 6px; cursor: default; }
+.sui-li[data-on="1"] { background: #2d8ceb; color: #fff; }

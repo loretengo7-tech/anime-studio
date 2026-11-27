@@ -87,6 +87,13 @@ export function EnhancePanel() {
 
   return (
     <div className="p-3 pb-10">
+      <button
+        className="w-full mb-3 p-3 rounded-[4px] border border-violet-500/50 bg-gradient-to-br from-violet-600/25 to-sky-600/15 text-left hover:border-violet-400"
+        onClick={() => useEditorStore.getState().setPanel('videolab')}
+      >
+        <div className="flex items-center gap-2 text-[13px] font-semibold text-white"><Wand2 size={14} className="text-violet-300" /> Open AI Video Lab</div>
+        <div className="text-[11px] text-zinc-400 mt-0.5">Enhance + upscale whole clips and interpolate them to 60 / 120 / 240 fps (Topaz / Flowframes style).</div>
+      </button>
       <SectionTitle right={<span className="text-[10px] text-zinc-500">{scaleLabel}</span>}>
         <Sparkles size={11} className="inline mr-1 text-violet-400" /> Detail Restore
       </SectionTitle>

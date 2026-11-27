@@ -114,8 +114,9 @@ export function addAssetLayer(asset: AssetMeta, at = now()) {
   return id
 }
 
-export async function importFiles(files: FileList | File[] | null, onBusy?: (name: string | null) => void) {
-  if (!files || files.length === 0) return
+export async function importFiles(files: FileList | File[] | null, onBusy?: (name: string | null) => void, opts?: { influx?: boolean }): Promise<AssetMeta[]> {
+  const imported: AssetMeta[] = []
+  if (!files || files.length === 0) return imported
   const { mutate, toast } = st()
   for (const file of Array.from(files)) {
     onBusy?.(file.name)
@@ -133,9 +134,10 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
           const res = await fetch('/api/media', { method: 'POST', body: form })
           if (!res.ok) throw new Error(await res.text())
           return await res.json() as { id: string; url: string }
-        })
+        }, opts)
       mutate(d => { d.assets.push(meta) })
       mediaManager.registerAsset(meta)
+      imported.push(meta)
       // Desktop app: heavy footage (above 1280 px or above 60 fps) gets an automatic ffmpeg proxy
       if (desktopBridge() && meta.kind === 'video' && (meta.width > 1280 || meta.fps > 60)) {
         const upsert = useEditorStore.getState().upsertJob
@@ -151,15 +153,19 @@ export async function importFiles(files: FileList | File[] | null, onBusy?: (nam
     }
   }
   onBusy?.(null)
+  return imported
 }
 
 /** Opens the OS file picker (File > Import > File… / Ctrl+I). */
-export function pickAndImport() {
+export function pickAndImport(influx = false) {
   const input = document.createElement('input')
   input.type = 'file'
   input.multiple = true
-  input.accept = 'video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav'
-  input.onchange = () => { void importFiles(input.files) }
+  input.accept = influx ? '' : 'video/*,audio/*,image/*,.mkv,.mov,.avi,.webm,.m4v,.flac,.ogg,.opus,.wav,.wmv,.flv,.mxf,.mts,.m2ts,.ts,.vob,.3gp,.mpg,.mpeg,.influx'
+  input.onchange = () => {
+    if (influx && !desktopBridge()) { st().toast({ kind: 'error', title: 'Influx import needs the desktop app', detail: 'It converts any format (and keeps transparency) with the bundled ffmpeg.' }); return }
+    void importFiles(input.files, undefined, influx ? { influx: true } : undefined)
+  }
   input.click()
 }
 

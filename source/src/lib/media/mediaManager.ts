@@ -374,12 +374,17 @@ export interface ImportResult {
 }
 
 /** MIME is often empty for .mkv/.mov on Windows/Android — fall back to the extension. */
+/** Containers browsers decode badly — the desktop app always routes them through Influx/ffmpeg. */
+const INFLUX_EXT = /\.(avi|wmv|asf|flv|f4v|mxf|vob|mts|m2ts|ts|3gp|3g2|rm|rmvb|dv|y4m|nut|divx|xvid|mpg|mpeg|m2v)(\.influx)?$/i
+
 export function mediaKindOf(file: File): 'video' | 'audio' | 'image' {
+  const name = file.name.replace(/\.influx$/i, '')
+  const ext = name.split('.').pop()?.toLowerCase() ?? ''
+  if (ext === 'gif' && /\.influx$/i.test(file.name)) return 'video'
   if (file.type.startsWith('video')) return 'video'
   if (file.type.startsWith('audio')) return 'audio'
   if (file.type.startsWith('image')) return 'image'
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
-  if (['mkv', 'mp4', 'm4v', 'mov', 'webm', 'avi', 'ts', 'mts', 'm2ts', 'flv', 'wmv', 'ogv', '3gp'].includes(ext)) return 'video'
+  if (['mkv', 'mp4', 'm4v', 'mov', 'webm', 'avi', 'ts', 'mts', 'm2ts', 'flv', 'wmv', 'ogv', '3gp', '3g2', 'mxf', 'vob', 'asf', 'f4v', 'rm', 'rmvb', 'dv', 'y4m', 'nut', 'divx', 'xvid', 'mpg', 'mpeg', 'm2v', 'apng'].includes(ext)) return 'video'
   if (['mp3', 'wav', 'flac', 'ogg', 'opus', 'm4a', 'aac', 'aif', 'aiff', 'wma'].includes(ext)) return 'audio'
   return 'image'
 }
@@ -517,8 +522,16 @@ export async function generatePeaks(url: string, buckets = 900): Promise<number[
 }
 
 /** Import a File: probe + thumbnails/peaks + upload to server. Returns AssetMeta. */
-export async function importMediaFile(file: File, uploadFn: (file: File, meta: { kind: string; duration: number; width: number; height: number; fps: number }) => Promise<{ id: string; url: string }>): Promise<AssetMeta> {
+export async function importMediaFile(file: File, uploadFn: (file: File, meta: { kind: string; duration: number; width: number; height: number; fps: number }) => Promise<{ id: string; url: string }>, opts?: { influx?: boolean }): Promise<AssetMeta> {
   let probe: Awaited<ReturnType<typeof probeMediaFile>>
+  // Influx-style import (desktop): forced by File > Import with Influx, a ".influx"
+  // suffix (same trick as the AE plug-in) or formats browsers decode badly.
+  const forced = opts?.influx || /\.influx$/i.test(file.name) || (mediaKindOf(file) === 'video' && INFLUX_EXT.test(file.name))
+  if (forced) {
+    const desk = desktopBridge()
+    if (!desk) throw new Error('Influx import converts with the bundled ffmpeg — it needs the AnimeStudio desktop app.')
+    file = await desk.convert(file, 'influx', file.name.replace(/\.influx$/i, ''))
+  }
   try {
     probe = await probeMediaFile(file)
   } catch (e) {
@@ -526,7 +539,7 @@ export async function importMediaFile(file: File, uploadFn: (file: File, meta: {
     // app converts it with its bundled ffmpeg; the web build explains why.
     const desk = desktopBridge()
     if (desk && mediaKindOf(file) !== 'image') {
-      file = await desk.convert(file, 'compat')
+      file = await desk.convert(file, 'influx')
       probe = await probeMediaFile(file)
     } else {
       const ext = file.name.split('.').pop()?.toUpperCase()
@@ -560,7 +573,7 @@ export async function importMediaFile(file: File, uploadFn: (file: File, meta: {
 // ---------------------------------------------------------------------------
 export interface DesktopBridge {
   platform: string
-  convert: (file: File | Blob, preset: 'compat' | 'proxy', name?: string) => Promise<File>
+  convert: (file: File | Blob, preset: 'compat' | 'proxy' | 'influx', name?: string) => Promise<File>
   gpuInfo?: () => Promise<string>
 }
 export function desktopBridge(): DesktopBridge | null {
@@ -573,7 +586,7 @@ export function desktopBridge(): DesktopBridge | null {
     convert: async (file, preset, name) => {
       const nm = name ?? (file as File).name ?? 'media'
       const out = await api.transcode(nm, await file.arrayBuffer(), preset)
-      return new File([out.data], out.name, { type: 'video/mp4' })
+      return new File([out.data], out.name, { type: /\.webm$/i.test(out.name) ? 'video/webm' : 'video/mp4' })
     },
   }
 }

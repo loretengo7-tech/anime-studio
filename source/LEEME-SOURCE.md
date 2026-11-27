@@ -1,5 +1,24 @@
 # ANIME STUDIO — Código fuente completo
 
+## v20 — AI Video Lab, extensiones/scripts de After Effects, Influx
+
+- **AI Video Lab** (botón *Video Lab* arriba, Layer > AI Video Lab, pestaña Enhance): estilo
+  Topaz Video + Flowframes para clips completos → archivo nuevo que reemplaza el clip.
+  Mejora (denoise, deblock, upscale 1.5×/2×/4×, líneas, detalle) + interpolación a 48–480 fps
+  (2×/4×/8×, cámara lenta, detección de cortes). Motores: *Flow* (flujo óptico GPU, cualquier
+  equipo) y *MCI* (ffmpeg con compensación de movimiento, app de escritorio).
+  `src/lib/engine/videolab.ts`, `src/components/editor/VideoLab.tsx`.
+- **Arreglo**: los cuadros intermedios de la interpolación salían negros (filtro de textura
+  inválido) — afectaba también al slow-motion existente.
+- **Extensiones y scripts de After Effects**: instala `.zxp`/`.zip` (paneles CEP, ej. NeuCurve)
+  y `.jsx` (ScriptUI). Se acoplan como pestañas (Window > Extensions) o flotan. Capa de
+  scripting de AE emulada (`src/lib/extensions/`): app.project, capas, Transform, efectos,
+  keyframes, KeyframeEase → curvas bezier reales, expresiones, ScriptUI. File > Scripts.
+- **Influx**: File > Import with Influx / botón INFLUX — cualquier formato (AVI, WMV, MXF, MTS,
+  VOB, ProRes, GIF…) vía ffmpeg, conservando la transparencia (WebM VP9 alpha). Sufijo
+  `.influx` como en el plug-in.
+- **Pestañas del panel derecho**: se desplazan con la rueda del mouse, flechas ‹ › y menú ».
+
 ## v19 — Preview sin parpadeo, audio fluido, Enhance arreglado, instalador de PC
 
 - **Parpadeo negro del preview**: la caché RAM pausaba los videos en cada cuadro cacheado y el

@@ -690,12 +690,80 @@ class SessionImpl implements InterpSession {
   private outCache = new Map<string, HTMLCanvasElement>()
   private outOrder: string[] = []
 
-  constructor(clipId: string, inPoint: number, endPoint: number, quality: InterpQuality) {
+  constructor(clipId: string, inPoint: number, endPoint: number, quality: InterpQuality, tier?: QualityTier) {
     this.clipId = clipId
     this.inPoint = inPoint
     this.endPoint = endPoint
     this.quality = quality
-    this.tier = TIERS[quality]
+    this.tier = tier ?? TIERS[quality]
+  }
+
+  // ---- Video Lab (Flowframes-style clip conversion): one frame pair at a time ----
+  /** Load a new A/B pair (full-res canvases): flow at working res, synthesis at full res. */
+  labSetPair(aFull: HTMLCanvasElement, bFull: HTMLCanvasElement): void {
+    const work = (src: HTMLCanvasElement) => {
+      const k = Math.min(1, this.tier.workMaxDim / Math.max(src.width, src.height))
+      const c = document.createElement('canvas')
+      c.width = Math.max(8, Math.round(src.width * k)); c.height = Math.max(8, Math.round(src.height * k))
+      c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height)
+      return c
+    }
+    const wa = work(aFull), wb = work(bFull)
+    const fa: SampleFrame = { time: 0, data: toLuma(rgbaOf(wa), wa.width, wa.height), rgba: wa, w: wa.width, h: wa.height }
+    const fb: SampleFrame = { time: 1, data: toLuma(rgbaOf(wb), wb.width, wb.height), rgba: wb, w: wb.width, h: wb.height }
+    // drop previous pair's flow textures / outputs
+    if (this.gpu) for (const e of this.flowTexCache.values()) { this.gpu.gl.deleteTexture(e.fwd); this.gpu.gl.deleteTexture(e.bwd) }
+    this.flowTexCache.clear(); this.flowTexOrder = []
+    this.outCache.clear(); this.outOrder = []
+    this.flows = []
+    let gpuOk = this.engine === 'gpu'
+    if (gpuOk) {
+      try {
+        if (!this.gpu) this.gpu = new GLCtx()
+        const gpu = this.gpu
+        gpu.program('hs', HS_FRAG); gpu.program('down', DOWN_FRAG); gpu.program('upflow', UPFLOW_FRAG); gpu.program('store', STORE_FRAG)
+        if (!this.scratch || this.workingW !== fa.w || this.workingH !== fa.h) {
+          this.workingW = fa.w; this.workingH = fa.h
+          this.scratch = makeScratch(gpu, fa.w, fa.h, this.tier.levels, Math.min(200, fa.w), Math.min(200, fa.h))
+        }
+        const r = estimateFlowGPU(gpu, fa, fb, this.tier, this.scratch)
+        this.flows.push({ fwd: r.fwd, bwd: r.bwd, gw: r.gw, gh: r.gh, maxFlow: r.maxFlow, t0: 0, t1: 1 })
+      } catch {
+        gpuOk = false
+        this.engine = 'cpu'
+      }
+    }
+    if (!gpuOk) {
+      const f = estimateFlowCPU(fa.data, fb.data, fa.w, fa.h)
+      this.flows.push({ fwd: new Uint8Array(0), bwd: new Uint8Array(0), gw: f.gw, gh: f.gh, maxFlow: FLOW_BYTE_SCALE, t0: 0, t1: 1, cpuFx: f.fx, cpuFy: f.fy, cpuValid: f.valid })
+    }
+    this.workingW = fa.w; this.workingH = fa.h
+    // synthesis samples the FULL-res frames
+    this.frames = [
+      { time: 0, data: fa.data, rgba: aFull, w: aFull.width, h: aFull.height },
+      { time: 1, data: fb.data, rgba: bFull, w: bFull.width, h: bFull.height },
+    ]
+    this.status = 'ready'
+  }
+
+  /** In-between frame at t∈(0,1) for the current pair, at full resolution. */
+  labSynth(t: number): HTMLCanvasElement {
+    const a = this.frames[0], b = this.frames[1]
+    if (this.engine === 'gpu' && this.ensureSynth()) return this.generateGPU(0, a, b, t)
+    // CPU path works at working res: scale the result back up
+    const wa = { ...a, rgba: this.workCanvas(a.rgba as HTMLCanvasElement), w: this.workingW, h: this.workingH }
+    const wb = { ...b, rgba: this.workCanvas(b.rgba as HTMLCanvasElement), w: this.workingW, h: this.workingH }
+    const small = this.generateCPU(0, wa, wb, t)
+    const out = document.createElement('canvas')
+    out.width = a.w; out.height = a.h
+    out.getContext('2d')!.drawImage(small, 0, 0, a.w, a.h)
+    return out
+  }
+  private workCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
+    const c = document.createElement('canvas')
+    c.width = this.workingW; c.height = this.workingH
+    c.getContext('2d')!.drawImage(src, 0, 0, c.width, c.height)
+    return c
   }
 
   private ensureSynth(): boolean {
@@ -788,8 +856,8 @@ class SessionImpl implements InterpSession {
     const bc = document.createElement('canvas')
     bc.width = outW; bc.height = outH
     bc.getContext('2d')!.drawImage(b.rgba as CanvasImageSource, 0, 0, outW, outH)
-    gpu.upload(texA, ac, outW, outH, 0)
-    gpu.upload(texB, bc, outW, outH, 1)
+    gpu.upload(texA, ac, outW, outH, gl.LINEAR)
+    gpu.upload(texB, bc, outW, outH, gl.LINEAR)
 
     if (this.synthW !== outW || this.synthH !== outH) {
       gl.bindTexture(gl.TEXTURE_2D, this.synthTex)
@@ -863,8 +931,8 @@ class SessionImpl implements InterpSession {
     const bwdTex = gpu.makeTex()
     const gw = flow?.gw ?? 8
     const gh = flow?.gh ?? 8
-    gpu.upload(fwdTex, flow?.fwd ?? new Uint8Array(128 * gw * gh), gw, gh, 0)
-    gpu.upload(bwdTex, flow?.bwd ?? new Uint8Array(128 * gw * gh), gw, gh, 0)
+    gpu.upload(fwdTex, flow?.fwd ?? new Uint8Array(128 * gw * gh), gw, gh, gl.LINEAR)
+    gpu.upload(bwdTex, flow?.bwd ?? new Uint8Array(128 * gw * gh), gw, gh, gl.LINEAR)
     this.flowTexCache.set(i, { fwd: fwdTex, bwd: bwdTex })
     this.flowTexOrder.push(i)
     return { fwdTex, bwdTex }
@@ -944,6 +1012,21 @@ class SessionImpl implements InterpSession {
     this.flowTexCache.clear()
     this.synthProg = null
   }
+}
+
+/**
+ * Flowframes-style pair interpolator for the Video Lab: feed consecutive
+ * source frames, get motion-compensated in-betweens at full resolution.
+ */
+export class PairInterpolator {
+  private s: SessionImpl
+  constructor(quality: InterpQuality = 'quality', outMaxDim = 4096) {
+    this.s = new SessionImpl('videolab', 0, 1, quality, { ...TIERS[quality], outMaxDim, maxOutCache: 2 })
+  }
+  get engine() { return this.s.engine }
+  setPair(a: HTMLCanvasElement, b: HTMLCanvasElement) { this.s.labSetPair(a, b) }
+  synth(t: number): HTMLCanvasElement { return this.s.labSynth(t) }
+  dispose() { this.s.frames = []; this.s.dispose() }
 }
 
 // ---------------------------------------------------------------------------

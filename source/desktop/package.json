@@ -1,7 +1,7 @@
 {
   "name": "animestudio-desktop",
   "productName": "AnimeStudio",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "AnimeStudio \u2014 After Effects-style anime video editor (desktop build)",
   "author": "Luis Caballero",
   "main": "main.cjs",
