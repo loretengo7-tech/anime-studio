@@ -183,7 +183,7 @@ function providerGemini(): Provider | null {
   const b = envBlob(raw)
   const key = b.GEMINI_API_KEY || clean(raw)
   if (!key) return null
-  return { type: 'gemini', name: 'gemini', key, model: clean(Deno.env.get('GEMINI_MODEL')) || b.GEMINI_MODEL || 'gemini-2.5-flash', auth: 'x-api-key' }
+  return { type: 'gemini', name: 'gemini', key, model: clean(Deno.env.get('GEMINI_MODEL')) || b.GEMINI_MODEL || 'gemini-3.5-flash', auth: 'x-api-key' }
 }
 
 // ---- Gemini: translate the Claude-style request (text + base64 image blocks) to generateContent
@@ -198,8 +198,8 @@ async function callGemini(p: Provider, system: string, messages: unknown[], maxT
   })).filter(c => c.parts.length)
   // busy (503/429) or slow models are common on the free tier: try a few, within one time budget
   // (the platform kills the function at ~150 s, which the app sees as "Failed to send a request")
-  const models = [...new Set([p.model, 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'])]
-  const deadline = Date.now() + 120_000
+  const models = [...new Set([p.model, 'gemini-3.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest', 'gemini-2.5-flash'])]
+  const deadline = Date.now() + 125_000
   let last = ''
   for (const model of models) {
     const left = deadline - Date.now()
@@ -208,11 +208,11 @@ async function callGemini(p: Provider, system: string, messages: unknown[], maxT
     try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-goog-api-key': p.key },
-      body: JSON.stringify({ ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), contents, generationConfig: { maxOutputTokens: Math.max(maxTokens, 8192) } }),
-      signal: AbortSignal.timeout(Math.min(75_000, left)),
-    }) } catch (e) { last = `${model}: ${e instanceof Error ? e.name : 'error'} (too slow)`; continue }
+      body: JSON.stringify({ ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), contents, generationConfig: { maxOutputTokens: Math.max(maxTokens, 8192), responseMimeType: 'application/json' } }),
+      signal: AbortSignal.timeout(Math.min(55_000, left)),
+    }) } catch (e) { last = `${model}: ${e instanceof Error ? e.name : 'error'} (too slow)`; console.warn('gemini', last); continue }
     const j = await r.json().catch(() => ({})) as { error?: { message?: string }; candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }; modelVersion?: string }
-    if (!r.ok) { last = `${model}: ${r.status} ${(j.error?.message ?? '').slice(0, 200)}`; if ([404, 429, 500, 503, 504].includes(r.status)) continue; throw new Error(`Gemini ${last}`) }
+    if (!r.ok) { last = `${model}: ${r.status} ${(j.error?.message ?? '').slice(0, 200)}`; if ([404, 429, 500, 503, 504].includes(r.status)) { console.warn('gemini', last); continue } throw new Error(`Gemini ${last}`) }
     const c = j.candidates?.[0]
     const text = (c?.content?.parts ?? []).filter(x => !x.thought).map(x => x.text ?? '').join('')
     const fr = c?.finishReason ?? ''

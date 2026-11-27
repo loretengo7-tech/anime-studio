@@ -122,7 +122,8 @@ export function parseAIResponse(raw: string): { reply: string; operations: Recor
       try { parsed = JSON.parse(match[0]) } catch { /* fallthrough */ }
     }
   }
-  if (!parsed || typeof parsed !== 'object') throw new Error('AI returned non-JSON output — try again or lower the request complexity.')
+  // a plain-text answer (no edits) is still an answer — show it instead of failing
+  if (!parsed || typeof parsed !== 'object') return { reply: raw.trim() || 'Done.', operations: [] }
   const KNOWN_OPS = new Set([
     'apply_effect', 'remove_effect', 'add_keyframes', 'clear_property_keyframes',
     'set_transform', 'set_speed', 'apply_velocity_preset', 'set_time_remap',
