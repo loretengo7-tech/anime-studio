@@ -1,22 +1,24 @@
 /**
  * ANIME STUDIO — AI settings (device-local)
  *
- * The API key lives ONLY in this browser's localStorage. It is never sent
- * anywhere except directly to the provider endpoint you choose (Gemini,
- * Anthropic, or Z.ai through the user's OWN Cloudflare Worker proxy — Z.ai's
- * API does not answer browser CORS preflight, so a direct call is impossible;
- * the worker just forwards the request and stores nothing). The user sets a
- * daily request cap so a runaway session can never burn the provider quota
- * silently.
+ * Claude only. The API key lives ONLY on this device (localStorage) and is sent
+ * only to the endpoint you configure: the Anthropic API by default, or any
+ * Anthropic-compatible endpoint (Base URL) — e.g. a company gateway or a key
+ * provider you trust. A daily request cap guards against runaway spending.
  */
-export type AIProvider = 'gemini' | 'claude' | 'zai'
+
+export type AuthMode = 'x-api-key' | 'bearer'
+export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface AISettings {
-  provider: AIProvider
   apiKey: string
+  /** '' = official Anthropic API. Otherwise an Anthropic-compatible endpoint (https://…). */
+  baseUrl: string
+  /** How the key is sent: x-api-key (Anthropic) or Authorization: Bearer (most gateways). */
+  authMode: AuthMode
   model: string
-  /** Z.ai only: URL of the user's own CORS proxy worker, e.g. https://my-zai-proxy.user.workers.dev */
-  proxyUrl: string
+  /** Thinking depth (official API only; custom endpoints get a plain request). */
+  effort: Effort
   /** Max assistant requests per calendar day (spend guard). */
   dailyRequestCap: number
   usageDate: string // YYYY-MM-DD (local)
@@ -24,23 +26,10 @@ export interface AISettings {
 }
 
 const LS_KEY = 'anime-studio:ai'
-
-export const DEFAULT_MODELS: Record<AIProvider, string> = {
-  gemini: 'gemini-2.0-flash',
-  claude: 'claude-sonnet-4-5',
-  zai: 'glm-4.6',
-}
+export const DEFAULT_MODEL = 'claude-opus-5-5'
 
 export function defaultAISettings(): AISettings {
-  return {
-    provider: 'gemini',
-    apiKey: '',
-    model: DEFAULT_MODELS.gemini,
-    proxyUrl: '',
-    dailyRequestCap: 25,
-    usageDate: todayStr(),
-    usageCount: 0,
-  }
+  return { apiKey: '', baseUrl: '', authMode: 'x-api-key', model: DEFAULT_MODEL, effort: 'medium', dailyRequestCap: 40, usageDate: todayStr(), usageCount: 0 }
 }
 
 function todayStr(): string {
@@ -48,20 +37,25 @@ function todayStr(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
+/** True when the requests go to Anthropic itself (not a third-party gateway). */
+export function isOfficialEndpoint(s: Pick<AISettings, 'baseUrl'>): boolean {
+  const b = s.baseUrl.trim()
+  if (!b) return true
+  try { return new URL(b).hostname === 'api.anthropic.com' } catch { return false }
+}
+
 export function loadAISettings(): AISettings {
   try {
     const raw = localStorage.getItem(LS_KEY)
     if (!raw) return defaultAISettings()
-    const parsed = JSON.parse(raw) as Partial<AISettings>
-    const s = { ...defaultAISettings(), ...parsed }
-    // daily rollover
-    if (s.usageDate !== todayStr()) {
-      s.usageDate = todayStr()
-      s.usageCount = 0
-    }
-    if (s.provider === 'claude' && (!parsed.model || parsed.model === DEFAULT_MODELS.gemini)) s.model = DEFAULT_MODELS.claude
-    if (s.provider === 'gemini' && (!parsed.model || parsed.model === DEFAULT_MODELS.claude || parsed.model === DEFAULT_MODELS.zai)) s.model = DEFAULT_MODELS.gemini
-    if (s.provider === 'zai' && (!parsed.model || parsed.model === DEFAULT_MODELS.gemini || parsed.model === DEFAULT_MODELS.claude)) s.model = DEFAULT_MODELS.zai
+    const parsed = JSON.parse(raw) as Partial<AISettings> & { provider?: string; proxyUrl?: string }
+    const { provider, proxyUrl: _proxy, ...rest } = parsed
+    const s: AISettings = { ...defaultAISettings(), ...rest }
+    // migration from the multi-provider version: a Gemini / Z.ai key can't talk to Claude
+    if (provider && provider !== 'claude') { s.apiKey = ''; s.model = DEFAULT_MODEL }
+    if (!s.model || /^(gemini|glm)/i.test(s.model)) s.model = DEFAULT_MODEL
+    if (s.authMode !== 'bearer' && s.authMode !== 'x-api-key') s.authMode = 'x-api-key'
+    if (s.usageDate !== todayStr()) { s.usageDate = todayStr(); s.usageCount = 0 }
     return s
   } catch {
     return defaultAISettings()
@@ -69,9 +63,7 @@ export function loadAISettings(): AISettings {
 }
 
 export function saveAISettings(s: AISettings) {
-  try {
-    localStorage.setItem(LS_KEY, JSON.stringify(s))
-  } catch { /* storage full — settings not persisted */ }
+  try { localStorage.setItem(LS_KEY, JSON.stringify(s)) } catch { /* storage full — settings not persisted */ }
 }
 
 export function remainingRequests(): number {

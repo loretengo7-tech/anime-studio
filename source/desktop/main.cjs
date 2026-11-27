@@ -372,6 +372,16 @@ ipcMain.handle('as:ofx-open-dir', async () => {
 ipcMain.handle('as:ofx-render', async (_e, req) => ofx().render(req))
 app.on('will-quit', () => { if (ofxMgr) ofxMgr.quit() })
 
+// AI requests to a custom Anthropic-compatible endpoint: done here (Chromium network stack,
+// no CORS) because many gateways don't answer browser preflights. HTTPS only.
+ipcMain.handle('as:http', async (_e, { url, method, headers, body }) => {
+  const u = new URL(url)
+  if (u.protocol !== 'https:') throw new Error('Only https:// endpoints are allowed')
+  const res = await net.fetch(url, { method: method || 'GET', headers: headers || {}, body: body ?? undefined })
+  const h = {}
+  res.headers.forEach((v, k) => { h[k] = v })
+  return { status: res.status, headers: h, body: await res.text() }
+})
 ipcMain.handle('as:gpu', async () => JSON.stringify(await app.getGPUInfo('basic')))
 
 function createWindow() {

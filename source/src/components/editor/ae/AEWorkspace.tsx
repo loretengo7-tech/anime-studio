@@ -66,6 +66,7 @@ const RIGHT_TABS: { id: string; title: string; panel?: string }[] = [
   { id: 'enhance', title: 'Enhance', panel: 'enhance' },
   { id: 'videolab', title: 'AI Video Lab', panel: 'videolab' },
   { id: 'extensions', title: 'Extensions', panel: 'extensions' },
+  { id: 'templates', title: 'AI Templates', panel: 'templates' },
   { id: 'ai', title: 'AI Assistant', panel: 'ai' },
   { id: 'plugins', title: 'Plugins', panel: 'plugins' },
 ]

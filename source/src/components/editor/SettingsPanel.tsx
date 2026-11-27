@@ -1,15 +1,15 @@
 'use client'
 /**
  * ANIME STUDIO — Settings panel
- *  - AI provider + API key (device-local only) + daily spend cap + test
+ *  - Claude API key + optional compatible endpoint (device-local only) + daily spend cap + test
  *  - Honest guide: how to get a key, how to limit spending, client-storage risks
  *  - Storage & PWA install info
  */
 import { useEffect, useState } from 'react'
 import {
-  loadAISettings, saveAISettings, resetAIUsage, DEFAULT_MODELS,
+  loadAISettings, saveAISettings, resetAIUsage, DEFAULT_MODEL, isOfficialEndpoint,
 } from '@/lib/ai/settings'
-import type { AISettings, AIProvider } from '@/lib/ai/settings'
+import type { AISettings, AuthMode, Effort } from '@/lib/ai/settings'
 import { testAIConnection } from '@/lib/ai/aiClient'
 import { STATIC_MODE } from '@/lib/media/staticMode'
 import { useEditorStore } from '@/lib/store/editorStore'
@@ -52,81 +52,75 @@ export function SettingsPanel() {
     <div className="p-3 pb-10">
       {/* ---------------- AI ---------------- */}
       <SectionTitle right={<span className="text-[10px] text-zinc-500">stored on this device only</span>}>
-        <KeyRound size={11} className="inline mr-1 text-violet-400" /> AI editing assistant
+        <KeyRound size={11} className="inline mr-1 text-violet-400" /> AI (Claude)
       </SectionTitle>
 
-      <Row label="Provider">
-        <select
-          className="flex-1 text-xs ginput rounded px-2 py-1.5"
-          value={s.provider}
-          onChange={e => {
-            const p = e.target.value as AIProvider
-            update({ provider: p, model: DEFAULT_MODELS[p] })
-            setTestResult(null)
-          }}
-        >
-          <option value="gemini">Google Gemini (free tier available)</option>
-          <option value="claude">Anthropic Claude (prepaid credits)</option>
-          <option value="zai">Z.ai GLM (via your own free proxy)</option>
-        </select>
-      </Row>
-
-      <Row label="Model">
-        <input
-          className="flex-1 text-xs ginput rounded px-2 py-1.5 as-mono"
-          value={s.model}
-          onChange={e => update({ model: e.target.value.trim() })}
-          placeholder={DEFAULT_MODELS[s.provider]}
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-      </Row>
-
       <div className="mb-2">
+        <div className="text-[11px] text-zinc-400 mb-1">API key</div>
         <div className="flex items-center gap-1.5">
           <input
             className="flex-1 text-xs ginput rounded px-2 py-2 as-mono"
             type={showKey ? 'text' : 'password'}
             value={s.apiKey}
             onChange={e => update({ apiKey: e.target.value.trim() })}
-            placeholder={s.provider === 'gemini' ? 'AIza… (Gemini API key)' : s.provider === 'claude' ? 'sk-ant-… (Claude API key)' : 'your Z.ai API key'}
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
+            placeholder="sk-ant-… (or the key of your Claude-compatible provider)"
+            autoCapitalize="off" autoCorrect="off" spellCheck={false}
           />
           <button className="tb-btn" onClick={() => setShowKey(v => !v)} aria-label="Show/hide key">
             {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
           </button>
         </div>
         <div className="text-[10px] text-zinc-500 mt-1 leading-relaxed">
-          {s.provider === 'gemini' ? (
-            <>Get it free: open <span className="text-sky-400">aistudio.google.com/apikey</span> in Safari → sign in → <b>Create API key</b>. Paste it here (never in the chat).</>
-          ) : s.provider === 'claude' ? (
-            <>Get it: <span className="text-sky-400">console.anthropic.com</span> → API Keys → Create key (needs prepaid credits).</>
-          ) : (
-            <>Get it: <span className="text-sky-400">z.ai open platform → API Keys</span>. Their API blocks direct browser calls, so ALSO deploy the free proxy worker (kit file <b>LEEME-ZAI.md</b>) and paste its URL below.</>
-          )}
+          Anthropic key: <span className="text-sky-400">console.anthropic.com</span> → API Keys. Paste it here, never in a chat.
         </div>
       </div>
 
-      {s.provider === 'zai' && (
-        <div className="mb-2">
-          <Row label="Proxy URL">
-            <input
-              className="flex-1 text-xs ginput rounded px-2 py-1.5 as-mono"
-              value={s.proxyUrl}
-              onChange={e => update({ proxyUrl: e.target.value.trim() })}
-              placeholder="https://my-zai-proxy.your-user.workers.dev"
-              autoCapitalize="off"
-              autoCorrect="off"
-              spellCheck={false}
-            />
+      <Row label="Base URL">
+        <input
+          className="flex-1 text-xs ginput rounded px-2 py-1.5 as-mono"
+          value={s.baseUrl}
+          onChange={e => {
+            const v = e.target.value.trim()
+            // gateways usually expect "Authorization: Bearer"; Anthropic expects x-api-key
+            update({ baseUrl: v, authMode: v && !/api\.anthropic\.com/.test(v) ? 'bearer' : 'x-api-key' })
+            setTestResult(null)
+          }}
+          placeholder="empty = api.anthropic.com · or https://your-endpoint"
+          autoCapitalize="off" autoCorrect="off" spellCheck={false}
+        />
+      </Row>
+      {!isOfficialEndpoint(s) && (
+        <>
+          <Row label="Send key as">
+            <select className="flex-1 text-xs ginput rounded px-2 py-1.5" value={s.authMode} onChange={e => update({ authMode: e.target.value as AuthMode })}>
+              <option value="bearer">Authorization: Bearer (most gateways)</option>
+              <option value="x-api-key">x-api-key (Anthropic style)</option>
+            </select>
           </Row>
-          <div className="text-[10px] text-zinc-600 leading-relaxed">
-            The worker only forwards your request to Z.ai — it stores nothing and never sees your key (it stays on this device and travels only inside the encrypted request). Setup: 10 minutes, free, kit file <b>LEEME-ZAI.md</b>.
+          <div className="text-[10px] text-amber-300/90 mb-2 leading-relaxed">
+            Custom endpoint: your prompts, project data and frames go to <b>{(() => { try { return new URL(s.baseUrl).hostname } catch { return 'that server' } })()}</b>, not to Anthropic. Use only a provider you trust. In the web version the endpoint must allow browser requests (CORS); the desktop app has no such limit.
           </div>
-        </div>
+        </>
+      )}
+
+      <Row label="Model">
+        <input
+          className="flex-1 text-xs ginput rounded px-2 py-1.5 as-mono"
+          value={s.model}
+          onChange={e => update({ model: e.target.value.trim() })}
+          placeholder={DEFAULT_MODEL}
+          autoCapitalize="off" autoCorrect="off" spellCheck={false}
+        />
+      </Row>
+      {isOfficialEndpoint(s) && (
+        <Row label="Effort">
+          <select className="flex-1 text-xs ginput rounded px-2 py-1.5" value={s.effort} onChange={e => update({ effort: e.target.value as Effort })}>
+            <option value="low">Low — fastest, cheapest</option>
+            <option value="medium">Medium — balanced (default)</option>
+            <option value="high">High — better templates</option>
+            <option value="xhigh">Extra high</option>
+          </select>
+        </Row>
       )}
 
       <Row label={`Daily cap · ${s.usageCount}/${s.dailyRequestCap} used`}>
@@ -144,7 +138,7 @@ export function SettingsPanel() {
         </button>
       </Row>
       <div className="text-[10px] text-zinc-600 mb-2 leading-relaxed">
-        The cap counts every assistant request made from this app per day and is enforced before sending — retries included. Also set a hard limit on the provider side: Google AI Studio → API keys (free tier quota), Anthropic Console → Limits → Monthly budget.
+        The cap counts every assistant request made from this app per day and is enforced before sending — retries included. Also set a hard limit on the provider side (Anthropic Console → Limits → monthly spend limit).
       </div>
 
       <button
@@ -165,7 +159,7 @@ export function SettingsPanel() {
         <ShieldAlert size={14} className="mt-0.5 shrink-0" />
         <div>
           <b>Risks of a client-stored key (honest):</b> the key lives in this browser&apos;s localStorage. Any code running on this page can read it, and anyone with your unlocked phone can extract it. It is never sent to my servers (there are none), but a leaked key can spend your provider quota.
-          Mitigate: use a key dedicated to this app, keep the daily cap low, restrict the Google key to the Generative Language API / a website referrer if you host it on your own domain, and rotate it if in doubt. Never paste the key into a chat.
+          Mitigate: use a key dedicated to this app, keep the daily cap low, and rotate it if in doubt. Never paste the key into a chat.
         </div>
       </div>
 

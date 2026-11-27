@@ -118,7 +118,7 @@ export function AIAssistant() {
       toast({
         kind: 'error',
         title: 'AI needs your API key',
-        detail: 'Open Settings (gear icon) → AI assistant and paste your Gemini, Claude or Z.ai key. It stays on this device only.',
+        detail: 'Open Settings (gear icon) → AI (Claude) and paste your key. It stays on this device only.',
       })
       setPanel('settings')
       return
@@ -304,13 +304,13 @@ function ProviderStatusLine() {
         onClick={() => setPanel('settings')}
       >
         <Settings2 size={13} className="shrink-0" />
-        <span className="flex-1">AI runs from YOUR browser with your own key — tap to set it up in Settings (Gemini free tier works).</span>
+        <span className="flex-1">AI runs on your device with your own Claude key — tap to set it up in Settings.</span>
       </button>
     )
   }
   return (
     <div className="mx-3 mt-2 flex items-center gap-2 text-[10px] text-zinc-500">
-      <span className="glass-soft rounded px-2 py-1">{s.provider} · {s.model}</span>
+      <span className="glass-soft rounded px-2 py-1">{s.baseUrl ? 'custom endpoint' : 'Claude'} · {s.model}</span>
       <span className="glass-soft rounded px-2 py-1">{Math.max(0, s.dailyRequestCap - s.usageCount)}/{s.dailyRequestCap} left today</span>
       <button className="text-violet-300 underline" onClick={() => setPanel('settings')}>settings</button>
     </div>

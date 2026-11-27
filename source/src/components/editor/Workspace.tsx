@@ -27,6 +27,7 @@ import { AudioPanel } from './AudioPanel'
 import { EnhancePanel } from './EnhancePanel'
 import { TrackerPanel } from './TrackerPanel'
 import { SettingsPanel } from './SettingsPanel'
+import { AITemplatesPanel } from './AITemplatesPanel'
 import { MobileWorkspace } from './MobileWorkspace'
 import { BeatSyncPanel } from './BeatSyncPanel'
 import { CutoutPanel } from './CutoutPanel'
@@ -295,6 +296,7 @@ export function Workspace() {
     comp: { title: 'Composition', el: <CompPanel /> },
     export: { title: 'Export & Render', el: <ExportDialog /> },
     beatsync: { title: 'Beat Sync', el: <BeatSyncPanel /> },
+    templates: { title: 'AI Templates', el: <AITemplatesPanel /> },
     cutout: { title: 'AI Cut-out', el: <CutoutPanel /> },
     videolab: { title: 'AI Video Lab', el: <VideoLab /> },
     extensions: { title: 'Extensions & Scripts', el: <ExtensionsPanel /> },

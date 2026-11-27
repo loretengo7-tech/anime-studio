@@ -1,19 +1,18 @@
 /**
- * ANIME STUDIO — Browser-direct AI client
+ * ANIME STUDIO — Claude client (official @anthropic-ai/sdk)
  *
- * Talks straight from the browser to the provider API using the user's own
- * key (stored device-local, see settings.ts). No intermediate server, no
- * server-stored keys, works offline-build (static hosting) too.
+ * Runs on the user's device with the user's own key (see settings.ts):
+ *  - Official Anthropic API: browser access is allowed by Anthropic for user-owned
+ *    keys (`dangerouslyAllowBrowser`). Adaptive thinking + effort + server-side
+ *    refusal fallback are enabled.
+ *  - Custom Anthropic-compatible endpoint (Base URL): a plain Messages request
+ *    (gateways often don't support the newest parameters). In the desktop app the
+ *    request goes through the main process, so endpoints without CORS work too.
  *
- * Providers:
- *  - Gemini: generativelanguage.googleapis.com (CORS enabled)
- *  - Claude: api.anthropic.com with the anthropic-dangerous-direct-browser-access
- *    header (officially supported browser access)
- *
- * Every request is counted against the daily cap BEFORE it is sent, so even
- * repeated manual retries cannot exceed the user's spend guard.
+ * Every request is counted against the daily cap BEFORE it is sent.
  */
-import { loadAISettings, recordAIRequest } from './settings'
+import Anthropic from '@anthropic-ai/sdk'
+import { loadAISettings, recordAIRequest, isOfficialEndpoint, type AISettings } from './settings'
 import { buildSystemPrompt, buildUserMessage, parseAIResponse } from './prompt'
 import type { AIContext } from './prompt'
 import type { AIOperation } from '../engine/types'
@@ -23,153 +22,117 @@ export interface AIResponse {
   operations: AIOperation[]
 }
 
-function friendlyHttpError(status: number, provider: string, body: string): string {
-  const snippet = body.slice(0, 220)
-  if (status === 400 && /API key not valid|API_KEY_INVALID/i.test(body)) return 'Invalid API key — check it in Settings (Google said: API key not valid).'
-  if (status === 401 || status === 403) return `${provider} rejected the key (HTTP ${status}). Check the key, its restrictions and billing. ${snippet}`
-  if (status === 404) return `Model not found for this key (HTTP 404). Check the model name in Settings. ${snippet}`
-  if (status === 429) return 'Quota/rate limit reached on the provider. Wait, or raise the limit in the provider console. Daily app cap unchanged.'
-  if (status === 402) return `${provider} says insufficient credits (HTTP 402). Add credit/billing to the account.`
-  return `${provider} HTTP ${status}: ${snippet}`
+// ---------------------------------------------------------------- transport
+
+interface DesktopHttp { httpFetch: (req: { url: string; method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; headers: Record<string, string>; body: string }> }
+function desktopHttp(): DesktopHttp | null {
+  const d = typeof window !== 'undefined' ? (window as unknown as { animeStudioDesktop?: Partial<DesktopHttp> }).animeStudioDesktop : undefined
+  return d && typeof d.httpFetch === 'function' ? d as DesktopHttp : null
+}
+/** fetch() through the desktop main process (no CORS); the SSE body is delivered whole. */
+function bridgedFetch(desk: DesktopHttp): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const req = input instanceof Request ? input : null
+    const url = req ? req.url : String(input)
+    const headers: Record<string, string> = {}
+    new Headers(init?.headers ?? req?.headers).forEach((v, k) => { headers[k] = v })
+    const body = typeof init?.body === 'string' ? init.body : init?.body ? await new Response(init.body).text() : undefined
+    const r = await desk.httpFetch({ url, method: init?.method ?? req?.method ?? 'GET', headers, body })
+    return new Response(r.body, { status: r.status, headers: r.headers })
+  }) as typeof fetch
 }
 
-async function callGemini(system: string, history: { role: 'user' | 'assistant'; content: string }[], user: string, signal?: AbortSignal): Promise<string> {
-  const s = loadAISettings()
-  const contents = [
-    ...history.map(h => ({ role: h.role === 'assistant' ? 'model' : 'user', parts: [{ text: h.content }] })),
-    { role: 'user', parts: [{ text: user }] },
-  ]
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(s.model)}:generateContent`, {
-    method: 'POST',
-    signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': s.apiKey,
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents,
-      generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
-    }),
+export function makeClient(s: AISettings = loadAISettings()): Anthropic {
+  const official = isOfficialEndpoint(s)
+  const baseURL = official ? undefined : s.baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/, '')
+  const desk = !official ? desktopHttp() : null
+  return new Anthropic({
+    ...(s.authMode === 'bearer' ? { apiKey: null, authToken: s.apiKey } : { apiKey: s.apiKey }),
+    baseURL,
+    dangerouslyAllowBrowser: true,
+    maxRetries: 2,
+    timeout: 10 * 60 * 1000,
+    ...(desk ? { fetch: bridgedFetch(desk) } : {}),
   })
-  if (!res.ok) throw new Error(friendlyHttpError(res.status, 'Gemini', await res.text().catch(() => '')))
-  const json = await res.json()
-  const cand = json?.candidates?.[0]
-  const text: string = (cand?.content?.parts ?? []).map((p: { text?: string }) => p.text ?? '').join('')
-  if (!text.trim()) {
-    const reason = cand?.finishReason ?? json?.promptFeedback?.blockReason ?? 'empty response'
-    throw new Error(`Gemini returned an empty response (${reason}).`)
-  }
-  return text
 }
 
-async function callClaude(system: string, history: { role: 'user' | 'assistant'; content: string }[], user: string, signal?: AbortSignal): Promise<string> {
-  const s = loadAISettings()
-  const messages = [
-    ...history.map(h => ({ role: h.role === 'assistant' ? 'assistant' : 'user', content: h.content })),
-    { role: 'user', content: user },
-  ]
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    signal,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': s.apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: s.model,
-      max_tokens: 4096,
-      system,
-      messages,
-    }),
-  })
-  if (!res.ok) throw new Error(friendlyHttpError(res.status, 'Claude', await res.text().catch(() => '')))
-  const json = await res.json()
-  const text: string = (json?.content ?? []).map((b: { text?: string }) => b.text ?? '').join('')
-  if (!text.trim()) throw new Error('Claude returned an empty response.')
-  return text
+/** Readable error text (typed SDK errors, most specific first). */
+export function friendlyError(e: unknown): string {
+  if (e instanceof Anthropic.AuthenticationError) return 'The endpoint rejected the API key (401). Check the key and the "Send key as" setting.'
+  if (e instanceof Anthropic.PermissionDeniedError) return 'This key has no permission for that model or endpoint (403).'
+  if (e instanceof Anthropic.NotFoundError) return 'Model or endpoint not found (404). Check the model name and the Base URL.'
+  if (e instanceof Anthropic.RateLimitError) return 'Rate limit / quota reached on the provider (429). Wait a bit or check your plan.'
+  if (e instanceof Anthropic.BadRequestError) return `The request was rejected (400): ${e.message}`
+  if (e instanceof Anthropic.InternalServerError) return `The provider had an error (${e.status}). Try again in a moment.`
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return 'The request timed out — the endpoint did not answer.'
+  if (e instanceof Anthropic.APIConnectionError) return 'Could not reach the endpoint (network / CORS). In the web version a custom Base URL must allow browser requests — the desktop app does not have this limit.'
+  if (e instanceof Anthropic.APIError) return `API error ${e.status ?? ''}: ${e.message}`
+  return e instanceof Error ? e.message : String(e)
 }
 
-async function callZai(system: string, history: { role: 'user' | 'assistant'; content: string }[], user: string, signal?: AbortSignal): Promise<string> {
+/**
+ * One Claude request. `content` may include images (base64 JPEG) for vision.
+ * Streams under the hood (long outputs never hit HTTP timeouts) and returns the text.
+ */
+export async function askClaude(opts: {
+  system: string
+  messages: Anthropic.MessageParam[]
+  maxTokens?: number
+  signal?: AbortSignal
+}): Promise<string> {
   const s = loadAISettings()
-  const proxy = s.proxyUrl.trim().replace(/\/+$/, '')
-  if (!proxy) {
-    throw new Error('Z.ai blocks direct browser calls (their API does not answer the CORS preflight — verified). Deploy the free Cloudflare Worker from the kit (LEEME-ZAI.md) and paste its URL in Settings → Proxy URL.')
-  }
-  if (!/^https:\/\//.test(proxy)) throw new Error('The proxy URL must start with https://')
-  const messages = [
-    { role: 'system', content: system },
-    ...history.map(h => ({ role: h.role, content: h.content })),
-    { role: 'user', content: user },
-  ]
-  let res: Response
+  if (!s.apiKey) throw new Error('No API key yet — open Settings → AI and paste your key.')
+  if (s.usageCount >= s.dailyRequestCap) throw new Error(`Daily cap reached (${s.dailyRequestCap} requests). Raise it in Settings or wait until tomorrow.`)
+  recordAIRequest() // counted before sending: retries can never exceed the cap
+  const client = makeClient(s)
+  const official = isOfficialEndpoint(s)
+  const system: Anthropic.TextBlockParam[] = [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }]
   try {
-    res = await fetch(`${proxy}/v1/chat/completions`, {
-      method: 'POST',
-      signal,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${s.apiKey}`,
-      },
-      body: JSON.stringify({
+    let msg: Anthropic.Message | Anthropic.Beta.BetaMessage
+    if (official) {
+      // official API: adaptive thinking (always on for current Opus) with an explicit effort,
+      // plus server-side fallback if a safety classifier declines the request
+      const stream = client.beta.messages.stream({
         model: s.model,
-        messages,
-        temperature: 0.4,
-        max_tokens: 4096,
-      }),
-    })
+        max_tokens: opts.maxTokens ?? 32000,
+        system,
+        messages: opts.messages as Anthropic.Beta.BetaMessageParam[],
+        output_config: { effort: s.effort },
+        betas: ['server-side-fallback-2026-07-01'],
+        fallbacks: 'default',
+      }, { signal: opts.signal })
+      msg = await stream.finalMessage()
+    } else {
+      const stream = client.messages.stream({
+        model: s.model,
+        max_tokens: opts.maxTokens ?? 32000,
+        system,
+        messages: opts.messages,
+      }, { signal: opts.signal })
+      msg = await stream.finalMessage()
+    }
+    if (msg.stop_reason === 'refusal') throw new Error('Claude declined this request.')
+    const text = msg.content.map(b => (b.type === 'text' ? b.text : '')).join('')
+    if (!text.trim()) throw new Error(msg.stop_reason === 'max_tokens' ? 'The answer was cut off (max tokens).' : 'Claude returned an empty answer.')
+    return text
   } catch (e) {
-    if (e instanceof TypeError) throw new Error('Network error reaching your proxy worker — check the URL and that the worker is deployed.')
-    throw e
+    if (e instanceof Error && /declined|empty answer|cut off/.test(e.message)) throw e
+    throw new Error(friendlyError(e))
   }
-  if (!res.ok) throw new Error(friendlyHttpError(res.status, 'Z.ai', await res.text().catch(() => '')))
-  let json: { choices?: { message?: { content?: string } }[] }
-  try {
-    json = await res.json()
-  } catch {
-    throw new Error('The proxy returned a non-JSON response — check the worker code matches zai-proxy.js from the kit.')
-  }
-  const text = json?.choices?.[0]?.message?.content ?? ''
-  if (!text.trim()) throw new Error('Z.ai returned an empty response.')
-  return text
 }
 
-/** Run one editing request. Throws with honest, actionable messages. */
+/** Run one editing request from the chat. Throws with honest, actionable messages. */
 export async function runAIEdit(message: string, mode: 'auto' | 'preview', context: AIContext): Promise<AIResponse> {
-  const s = loadAISettings()
-  if (!s.apiKey) throw new Error('No API key configured — open Settings → AI and paste your key.')
-  if (s.usageCount >= s.dailyRequestCap) {
-    throw new Error(`Daily cap reached (${s.dailyRequestCap} requests). Raise it in Settings or wait for tomorrow.`)
-  }
-
-  const system = buildSystemPrompt()
-  const user = buildUserMessage(mode, context, message)
   const history = (context.recentHistory ?? []).slice(-6).map(h => ({
     role: (h.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
     content: h.content,
   }))
-
-  let raw: string
-  try {
-    raw = s.provider === 'gemini'
-      ? await callGemini(system, history, user)
-      : s.provider === 'claude'
-        ? await callClaude(system, history, user)
-        : await callZai(system, history, user)
-  } catch (e) {
-    if (e instanceof TypeError) {
-      throw new Error('Network/CORS error reaching the provider — check the connection or the key restrictions.')
-    }
-    throw e
-  }
-  recordAIRequest()
+  const raw = await askClaude({
+    system: buildSystemPrompt(),
+    messages: [...history, { role: 'user', content: buildUserMessage(mode, context, message) }],
+  })
   const parsed = parseAIResponse(raw)
-  return {
-    reply: parsed.reply,
-    operations: parsed.operations as AIOperation[],
-  }
+  return { reply: parsed.reply, operations: parsed.operations as AIOperation[] }
 }
 
 /** Tiny connectivity test used by the Settings screen. Counts against the cap. */
@@ -177,21 +140,13 @@ export async function testAIConnection(): Promise<{ ok: boolean; message: string
   const s = loadAISettings()
   if (!s.apiKey) return { ok: false, message: 'No key saved yet.' }
   try {
-    const ctx: AIContext = {
-      projectName: 'test', composition: { width: 16, height: 9, fps: 30, duration: 1 },
-      tracks: [], clips: [], assets: [], selectedClipId: null, playhead: 0, beats: 0, bpm: 0,
-      recentHistory: [],
-    }
-    const user = `MODE: AUTO\nPROJECT CONTEXT:\n{"test":true}\n\nUSER REQUEST: reply with {"reply":"ok","operations":[]}`
-    const system = 'You are a connectivity probe. Answer ONLY strict JSON {"reply":"ok","operations":[]}.'
-    const raw = s.provider === 'gemini'
-      ? await callGemini(system, [], user)
-      : s.provider === 'claude'
-        ? await callClaude(system, [], user)
-        : await callZai(system, [], user)
-    recordAIRequest()
+    const raw = await askClaude({
+      system: 'You are a connectivity probe. Answer ONLY with the JSON {"reply":"ok","operations":[]}.',
+      messages: [{ role: 'user', content: 'ping' }],
+      maxTokens: 2000,
+    })
     parseAIResponse(raw)
-    return { ok: true, message: `Connected to ${s.provider} (${s.model}). Usage counted: ${s.usageCount + 1}/${s.dailyRequestCap} today.` }
+    return { ok: true, message: `Connected to ${isOfficialEndpoint(s) ? 'Anthropic' : s.baseUrl} · ${s.model}. Used today: ${loadAISettings().usageCount}/${s.dailyRequestCap}.` }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }

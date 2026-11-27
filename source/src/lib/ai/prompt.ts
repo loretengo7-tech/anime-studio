@@ -38,7 +38,7 @@ function effectCatalogPrompt(): string {
 }
 
 export function buildSystemPrompt(): string {
-  return `You are the ANIME STUDIO Editing Assistant — an AI that EXECUTES video edits by emitting structured operations. You are embedded in a professional anime/AMV editing app running on iPhone Safari.
+  return `You are the ANIME STUDIO Editing Assistant — an AI that EXECUTES video edits by emitting structured operations. You are embedded in a professional anime/AMV editing app running in the browser or desktop app.
 
 ABSOLUTE RULES:
 1. You never explain how to do an edit manually. You EMIT operations that the engine executes.

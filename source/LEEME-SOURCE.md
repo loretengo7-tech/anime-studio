@@ -1,5 +1,23 @@
 # ANIME STUDIO — Código fuente completo
 
+## v24 — IA con Claude: plantillas desde un edit + asistente
+
+- **AI Templates** (pestaña derecha): elegís un edit de referencia → se mide en el dispositivo
+  (cortes por diferencia de cuadros, flashes blancos —incluido el corte escondido detrás del
+  flash—, movimiento por toma, beats y BPM) → Claude mira cuadros de cada toma (inicio/medio/fin)
+  y describe cada una (rol, qué clip encaja, zoom/paneo/shake, rampa de velocidad, efectos,
+  flash, texto) → se crea un proyecto plantilla con la música, un "slot" por toma con sus
+  movimientos y efectos, capas de flash, look global, marcadores de corte y grilla de beats →
+  "Fill slots with my clips" pone tus clips (Shuffle = otra mezcla). Las plantillas se guardan
+  en "My templates". Los tiempos siempre salen de la medición, nunca del modelo.
+  `src/lib/ai/editTemplate.ts`, `src/components/editor/AITemplatesPanel.tsx`.
+- **Solo Claude**, con el SDK oficial `@anthropic-ai/sdk` (`src/lib/ai/aiClient.ts`): modelo por
+  defecto `claude-opus-5-5`, effort configurable y fallback del servidor en la API oficial.
+  **Base URL** para endpoints compatibles con Anthropic (la key se manda como Bearer o x-api-key);
+  en la app de PC las llamadas a endpoints propios pasan por el proceso principal (sin CORS).
+  Se quitaron Gemini, Z.ai y la ruta de servidor `/api/ai`.
+- Dónde poner la API: **Settings (engranaje) → AI (Claude)**: API key, Base URL, modelo.
+
 ## v23 — Flow arreglado de verdad, AI Cut-out tipo chroma, máscaras como en After
 
 - **Flow (Video Lab y cámara lenta)**: los cuadros intermedios salían boca abajo, con

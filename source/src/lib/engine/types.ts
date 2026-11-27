@@ -207,6 +207,8 @@ interface ClipBase {
   shy?: boolean
   /** AE label color index (see LABEL_COLORS). */
   label?: number
+  /** AI template placeholder: which slot of the template this layer is (survives filling it with a clip). */
+  templateSlot?: { index: number; role: string; hint: string; velocity: string; velocityIntensity: number }
   /** Shares the decoder of another clip on the same footage (AI cut-out "text behind" copy) — always frame-identical, no second decode. */
   mediaLink?: string
   /** AE motion blur switch (needs the comp's motion blur enabled too). */

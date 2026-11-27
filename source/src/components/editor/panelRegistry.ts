@@ -1,5 +1,5 @@
 export type PanelKind =
   | 'assets' | 'effects' | 'inspector' | 'graph' | 'speed' | 'audio'
   | 'text' | 'color' | 'enhance' | 'ai' | 'projects' | 'status' | 'comp' | 'export'
-  | 'tracker' | 'plugins' | 'settings' | 'beatsync' | 'cutout' | 'videolab' | 'extensions'
+  | 'tracker' | 'plugins' | 'settings' | 'beatsync' | 'cutout' | 'videolab' | 'extensions' | 'templates'
   | null
