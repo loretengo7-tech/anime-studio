@@ -1,5 +1,20 @@
 # ANIME STUDIO — Código fuente completo
 
+## v25 — Cuentas y IA de pago (Pro) con Supabase
+
+- **Cuentas**: crear cuenta / iniciar sesión / recuperar contraseña (Supabase Auth) en
+  Settings → Account y dentro de las funciones de IA. `src/lib/account/account.ts`,
+  `src/components/editor/AccountPanel.tsx`.
+- **La IA es Pro** y ya no hay menú de keys: la app llama a la función `ai` de Supabase, que
+  verifica el usuario, el plan (admin / suscripción activa) y la cuota mensual, y llama a Claude
+  con la key guardada como secret del servidor (`ANTHROPIC_API_KEY`). El usuario nunca la ve.
+- **Base de datos** (`supabase/migrations`): `profiles` (is_admin), `subscriptions` (status,
+  período), `ai_usage` (tokens por pedido). RLS: cada usuario solo lee lo suyo y no puede
+  modificarse el plan (probado: 403).
+- Probado de punta a punta con un usuario temporal (ya borrado): gate sin sesión, contraseña
+  incorrecta, plan free → 402 del servidor, admin → pasa hasta el servidor.
+- Falta: cargar `ANTHROPIC_API_KEY` en Supabase, configurar las URLs de Auth y conectar Paddle.
+
 ## v24 — IA con Claude: plantillas desde un edit + asistente
 
 - **AI Templates** (pestaña derecha): elegís un edit de referencia → se mide en el dispositivo

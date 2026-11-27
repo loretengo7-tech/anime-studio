@@ -10,7 +10,8 @@ import { useEditorStore } from '@/lib/store/editorStore'
 import { playbackEngine } from '@/lib/engine/playback'
 import { trackPoint } from '@/lib/engine/tracker'
 import { runAIEdit } from '@/lib/ai/aiClient'
-import { loadAISettings } from '@/lib/ai/settings'
+import { ProGate } from './AccountPanel'
+import { useAccount } from '@/lib/account/account'
 import type { VideoClip } from '@/lib/engine/types'
 import { Send, Loader2, Sparkles, Check, X, Bot, CircleAlert, Settings2 } from 'lucide-react'
 
@@ -26,6 +27,10 @@ const SUGGESTIONS = [
 ]
 
 export function AIAssistant() {
+  return <ProGate feature="The AI assistant"><AIAssistantInner /></ProGate>
+}
+
+function AIAssistantInner() {
   const doc = useEditorStore(s => s.doc)
   const mutate = useEditorStore(s => s.mutate)
   const aiBusy = useEditorStore(s => s.aiBusy)
@@ -113,16 +118,6 @@ export function AIAssistant() {
   const send = async (text?: string) => {
     const message = (text ?? input).trim()
     if (!message || aiBusy) return
-    const settings = loadAISettings()
-    if (!settings.apiKey) {
-      toast({
-        kind: 'error',
-        title: 'AI needs your API key',
-        detail: 'Open Settings (gear icon) → AI (Claude) and paste your key. It stays on this device only.',
-      })
-      setPanel('settings')
-      return
-    }
     setInput('')
     setAiBusy(true)
     setLocalBusy(true)
@@ -292,27 +287,14 @@ export function AIAssistant() {
   )
 }
 
-/** Small header row: provider + remaining requests today (honest, live). */
+/** Small header row: plan + AI messages left this month (live). */
 function ProviderStatusLine() {
-  const setPanel = useEditorStore(s => s.setPanel)
-  // reads localStorage at mount; the panel remounts on every open so it is current
-  const s = loadAISettings()
-  if (!s.apiKey) {
-    return (
-      <button
-        className="mx-3 mt-2 p-2.5 rounded-lg glass-violet text-[11px] text-violet-100 flex items-center gap-2 text-left"
-        onClick={() => setPanel('settings')}
-      >
-        <Settings2 size={13} className="shrink-0" />
-        <span className="flex-1">AI runs on your device with your own Claude key — tap to set it up in Settings.</span>
-      </button>
-    )
-  }
+  const plan = useAccount(s => s.plan)
+  if (!plan) return null
   return (
     <div className="mx-3 mt-2 flex items-center gap-2 text-[10px] text-zinc-500">
-      <span className="glass-soft rounded px-2 py-1">{s.baseUrl ? 'custom endpoint' : 'Claude'} · {s.model}</span>
-      <span className="glass-soft rounded px-2 py-1">{Math.max(0, s.dailyRequestCap - s.usageCount)}/{s.dailyRequestCap} left today</span>
-      <button className="text-violet-300 underline" onClick={() => setPanel('settings')}>settings</button>
+      <span className="glass-soft rounded px-2 py-1">{plan.isAdmin ? 'Owner · unlimited' : 'AnimeStudio Pro'}</span>
+      {plan.limits && <span className="glass-soft rounded px-2 py-1">{Math.max(0, plan.limits.chat - plan.used.chat)}/{plan.limits.chat} messages left this month</span>}
     </div>
   )
 }

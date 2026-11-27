@@ -5,9 +5,8 @@
  */
 import { useMemo, useRef, useState } from 'react'
 import { useEditorStore } from '@/lib/store/editorStore'
-import { useUIStore } from '@/lib/store/uiStore'
 import type { AssetMeta } from '@/lib/engine/types'
-import { loadAISettings } from '@/lib/ai/settings'
+import { ProGate } from './AccountPanel'
 import {
   analyzeReference, requestTemplate, buildTemplateProject, fillTemplate, clearTemplate,
   listTemplates, saveTemplate, deleteTemplate, type EditAnalysis, type TemplateSpec, type SavedTemplate,
@@ -15,12 +14,15 @@ import {
 import { importFiles } from './ae/aeActions'
 import { mediaManager } from '@/lib/media/mediaManager'
 import { playbackEngine } from '@/lib/engine/playback'
-import { Wand2, Loader2, Upload, Shuffle, Eraser, Sparkles, Trash2, Film, KeyRound, Square } from 'lucide-react'
+import { Wand2, Loader2, Upload, Shuffle, Eraser, Sparkles, Trash2, Film , Square } from 'lucide-react'
 
 export function AITemplatesPanel() {
+  return <ProGate feature="AI Templates"><AITemplatesInner /></ProGate>
+}
+
+function AITemplatesInner() {
   const doc = useEditorStore(s => s.doc)
   const toast = useEditorStore(s => s.toast)
-  const setDialog = useUIStore(s => s.setDialog)
   const videos = doc.assets.filter(a => a.kind === 'video' && !a.missingPath)
   const [refId, setRefId] = useState<string>('')
   const ref = videos.find(v => v.id === refId) ?? videos[0]
@@ -30,7 +32,7 @@ export function AITemplatesPanel() {
   const [lib, setLib] = useState<SavedTemplate[]>(() => listTemplates())
   const abort = useRef<AbortController | null>(null)
   const cancelled = useRef(false)
-  const hasKey = !!loadAISettings().apiKey
+  const hasKey = true // access is checked by ProGate + the server
 
   const slots = doc.clips.filter(c => c.templateSlot)
   const filled = slots.filter(c => c.kind !== 'solid').length
@@ -83,11 +85,6 @@ export function AITemplatesPanel() {
       <h3 className="flex items-center gap-1.5"><Sparkles size={14} className="text-violet-400" /> AI Templates</h3>
       <p className="text-zinc-400 leading-5">Give it an edit you like: the AI measures its cuts, flashes and beats, looks at every shot and rebuilds it as a template. Then drop your clips in and it fills every slot with the same moves, effects and speed ramps.</p>
 
-      {!hasKey && (
-        <button className="w-full rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 text-[11px] p-2 flex items-center gap-2 text-left" onClick={() => setDialog('settings')}>
-          <KeyRound size={14} className="shrink-0" /> Add your Claude API key in Settings → AI to use templates.
-        </button>
-      )}
 
       {/* ---- 1. reference */}
       <div className="space-y-1.5">
@@ -165,7 +162,7 @@ export function AITemplatesPanel() {
           ))}
         </div>
       )}
-      <p className="text-[10px] text-zinc-600 leading-4">The edit is measured on your device; only small frames (256 px) and the measurements are sent to Claude with your key.</p>
+      <p className="text-[10px] text-zinc-600 leading-4">The edit is measured on your device; only small frames (256 px) and the measurements are sent to the AI. Each template counts toward your monthly Pro quota.</p>
     </div>
   )
 }

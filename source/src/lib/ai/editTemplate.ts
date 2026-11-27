@@ -235,7 +235,7 @@ export async function requestTemplate(a: EditAnalysis, userNotes: string, signal
   }
   content.push({ type: 'text', text: `${userNotes.trim() ? `USER NOTES: ${userNotes.trim()}\n` : ''}Answer ONLY with JSON (no markdown) of this shape:
 {"name": string, "summary": string, "style": string[], "global": {"effects": [{"type": string, "params": {..}}]}, "segments": [{"i": number, "role": string, "slotHint": string, "camera": {"type": string, "intensity": number}, "shake": number, "velocity": {"preset": string, "intensity": number}, "flashIn": boolean, "effects": [{"type": string, "params": {..}}], "text": {"content": string, "animation": string} | null}]}` })
-  const raw = await askClaude({ system: SYSTEM + catalog(), messages: [{ role: 'user', content }], maxTokens: 32000, signal })
+  const raw = await askClaude({ kind: 'template', system: SYSTEM + catalog(), messages: [{ role: 'user', content }], maxTokens: 32000, signal })
   const i0 = raw.indexOf('{'), i1 = raw.lastIndexOf('}')
   if (i0 < 0 || i1 <= i0) throw new Error('Claude did not return a template (no JSON in the answer).')
   let json: unknown

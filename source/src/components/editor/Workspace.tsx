@@ -146,6 +146,8 @@ export function Workspace() {
     // re-register fonts the user installed (FontFace + IndexedDB)
     // OpenFX plug-ins installed on this PC (desktop app)
     void import('@/lib/engine/ofx').then(m => m.initOfx()).catch(() => { })
+    // accounts (Supabase): restore the session so AI features know the user's plan
+    void import('@/lib/account/account').then(m => m.initAccount()).catch(() => { })
     const ofxErrShown = new Set<string>()
     window.addEventListener('as-ofx-error', e => {
       const d = (e as CustomEvent<{ type: string; message: string }>).detail
