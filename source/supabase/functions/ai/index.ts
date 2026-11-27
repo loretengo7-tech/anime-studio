@@ -75,7 +75,8 @@ Deno.serve(async req => {
 
   // ---- providers: ANTHROPIC_API_KEY, then backups ANTHROPIC_API_KEY_2.._5. A backup may point to
   // another Anthropic-compatible server with ANTHROPIC_BASE_URL_N (+ optional ANTHROPIC_MODEL_N,
-  // ANTHROPIC_AUTH_N = "bearer" | "x-api-key"). Each one is tried in order until one answers.
+  // ANTHROPIC_AUTH_N = "bearer" | "x-api-key"); GEMINI_API_KEY adds Google Gemini. Each one is tried
+  // in order until one answers.
   const providers = keyChain()
   if (!providers.length) return json(503, { error: 'ai_not_configured', message: 'The AI is not configured on the server yet.' })
 
@@ -83,12 +84,14 @@ Deno.serve(async req => {
   const failures: string[] = []
   for (const p of providers) {
     try {
+      let msg: { model: string; stop_reason: string | null; usage: { input_tokens?: number | null; output_tokens?: number | null }; content: { type: string; text?: string }[] }
+      if (p.type === 'gemini') msg = await callGemini(p, system, messages, maxTokens)
+      else {
       const client = new Anthropic({
         ...(p.auth === 'bearer' ? { apiKey: null, authToken: p.key } : { apiKey: p.key }),
         ...(p.baseURL ? { baseURL: p.baseURL } : {}),
         maxRetries: 1, timeout: 140_000,
       })
-      let msg: { model: string; stop_reason: string | null; usage: { input_tokens?: number | null; output_tokens?: number | null }; content: { type: string; text?: string }[] }
       if (!p.baseURL) {
         // official API: effort + server-side refusal fallback
         msg = await client.beta.messages.stream({
@@ -107,7 +110,8 @@ Deno.serve(async req => {
           messages: messages as Anthropic.MessageParam[],
         }).finalMessage()
       }
-      await admin.from('ai_usage').insert({ user_id: user.id, kind, model: `${msg.model}${p.baseURL ? ' @' + p.name : ''}`, input_tokens: msg.usage.input_tokens ?? 0, output_tokens: msg.usage.output_tokens ?? 0 })
+      }
+      await admin.from('ai_usage').insert({ user_id: user.id, kind, model: `${msg.model}${p.baseURL || p.type === 'gemini' ? ' @' + p.name : ''}`, input_tokens: msg.usage.input_tokens ?? 0, output_tokens: msg.usage.output_tokens ?? 0 })
       if (msg.stop_reason === 'refusal') return json(422, { error: 'refused', message: 'Claude declined this request.' })
       const text = msg.content.map(b => (b.type === 'text' ? b.text ?? '' : '')).join('')
       if (failures.length) console.warn('ai served by backup', p.name, 'after', failures.join(' | '))
@@ -153,7 +157,7 @@ function providerEnv(n: string) {
 const keyChainProblems: string[] = []
 function keyChain() {
   keyChainProblems.length = 0
-  const out: { name: string; key: string; baseURL?: string; model: string; auth: 'bearer' | 'x-api-key' }[] = []
+  const out: Provider[] = []
   for (const n of ['', '_2', '_3', '_4', '_5']) {
     const env = providerEnv(n)
     const key = env.key
@@ -165,7 +169,53 @@ function keyChain() {
     try { if (base) host = new URL(base).hostname } catch { keyChainProblems.push(`ANTHROPIC_BASE_URL${n}: not a valid URL (length ${base.length}, has dot: ${base.includes('.')}, starts: ${base.slice(0, 12)})`); console.error(`ANTHROPIC_BASE_URL${n} is not a valid URL — skipped`); continue }
     const official = !base || host === 'api.anthropic.com'
     const auth = (env.auth || (official ? 'x-api-key' : 'bearer')) === 'x-api-key' ? 'x-api-key' : 'bearer'
-    out.push({ name: `key${n || '_1'}${official ? '' : ' (' + host + ')'}`, key, baseURL: official ? undefined : base, model: env.model || MODEL, auth })
+    out.push({ type: 'anthropic', name: `key${n || '_1'}${official ? '' : ' (' + host + ')'}`, key, baseURL: official ? undefined : base, model: env.model || MODEL, auth })
   }
+  // Google Gemini (free tier at aistudio.google.com): GEMINI_API_KEY (+ optional GEMINI_MODEL).
+  // Tried after the Claude keys, or first with AI_PRIMARY=gemini.
+  const g = providerGemini()
+  if (g) { if (clean(Deno.env.get('AI_PRIMARY')).toLowerCase() === 'gemini') out.unshift(g); else out.push(g) }
   return out
+}
+type Provider = { type: 'anthropic' | 'gemini'; name: string; key: string; baseURL?: string; model: string; auth: 'bearer' | 'x-api-key' }
+function providerGemini(): Provider | null {
+  const raw = Deno.env.get('GEMINI_API_KEY')
+  const b = envBlob(raw)
+  const key = b.GEMINI_API_KEY || clean(raw)
+  if (!key) return null
+  return { type: 'gemini', name: 'gemini', key, model: clean(Deno.env.get('GEMINI_MODEL')) || b.GEMINI_MODEL || 'gemini-2.5-flash', auth: 'x-api-key' }
+}
+
+// ---- Gemini: translate the Claude-style request (text + base64 image blocks) to generateContent
+type Block = { type: string; text?: string; source?: { type?: string; media_type?: string; data?: string } }
+async function callGemini(p: Provider, system: string, messages: unknown[], maxTokens: number) {
+  const contents = (messages as { role: string; content: string | Block[] }[]).map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: (typeof m.content === 'string' ? [{ type: 'text', text: m.content } as Block] : m.content).flatMap((b: Block): ({ text: string } | { inline_data: { mime_type: string; data: string } })[] =>
+      b.type === 'text' ? [{ text: b.text ?? '' }]
+        : b.type === 'image' && b.source?.data ? [{ inline_data: { mime_type: b.source.media_type ?? 'image/jpeg', data: b.source.data } }]
+        : []),
+  })).filter(c => c.parts.length)
+  const models = [p.model, ...(p.model === 'gemini-flash-latest' ? [] : ['gemini-flash-latest'])]
+  let last = ''
+  for (const model of models) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': p.key },
+      body: JSON.stringify({ ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}), contents, generationConfig: { maxOutputTokens: Math.max(maxTokens, 8192) } }),
+      signal: AbortSignal.timeout(140_000),
+    })
+    const j = await r.json().catch(() => ({})) as { error?: { message?: string }; candidates?: { content?: { parts?: { text?: string; thought?: boolean }[] }; finishReason?: string }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number }; modelVersion?: string }
+    if (!r.ok) { last = `${model}: ${r.status} ${(j.error?.message ?? '').slice(0, 200)}`; if (r.status === 404) continue; throw new Error(`Gemini ${last}`) }
+    const c = j.candidates?.[0]
+    const text = (c?.content?.parts ?? []).filter(x => !x.thought).map(x => x.text ?? '').join('')
+    const fr = c?.finishReason ?? ''
+    return {
+      model: j.modelVersion ?? model,
+      stop_reason: fr === 'MAX_TOKENS' ? 'max_tokens' : fr === 'SAFETY' || fr === 'PROHIBITED_CONTENT' ? 'refusal' : 'end_turn',
+      usage: { input_tokens: j.usageMetadata?.promptTokenCount ?? 0, output_tokens: j.usageMetadata?.candidatesTokenCount ?? 0 },
+      content: [{ type: 'text', text }],
+    }
+  }
+  throw new Error(`Gemini ${last}`)
 }
